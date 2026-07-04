@@ -1,0 +1,11 @@
+node_modules
+dist
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+data/*.log
+test-results
+playwright-report
+.env
+*.log
+current-ui*.png

@@ -1,0 +1,24 @@
+import { createStore } from "solid-js/store";
+import type { AiResponse } from "../../shared/types";
+import type { FloatingMenu } from "../components/SelectionMenu";
+
+export interface UiState {
+  busy: string;
+  error: string;
+  dropActive: boolean;
+  floatingMenu: FloatingMenu | null;
+  aiResult: AiResponse | null;
+  noteFocusRequest: number;
+  chatFocusRequest: number;
+}
+
+export const createUiStore = () =>
+  createStore<UiState>({
+    busy: "",
+    error: "",
+    dropActive: false,
+    floatingMenu: null,
+    aiResult: null,
+    noteFocusRequest: 0,
+    chatFocusRequest: 0
+  });
