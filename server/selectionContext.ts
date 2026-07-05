@@ -14,6 +14,17 @@ export interface AiFileContext {
 export const resolveSelectionFileContext = async (selection: SelectionRecord | null): Promise<AiFileContext | null> => {
   if (!selection || selection.kind !== "image") return null;
 
+  if (selection.imageData) {
+    const parsed = parseDataUrl(selection.imageData);
+    return {
+      bytes: parsed.bytes,
+      mediaType: parsed.mediaType,
+      filename: "selection.png",
+      region: selection.region,
+      source: "page-image"
+    };
+  }
+
   const page = getSelectionPage(selection);
   if (page?.kind === "image") {
     if (page.sourcePath) {

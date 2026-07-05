@@ -21,7 +21,6 @@ interface ReaderViewportProps {
   onDragOver: (event: DragEvent) => void;
   onDragLeave: () => void;
   onDrop: (event: DragEvent) => void;
-  onPointerUp: (event: PointerEvent) => void;
   onScroll: (scrollTop: number) => void;
   onRegion: (page: DocumentPage, pageIndex: number, payload: RegionPayload) => void;
 }
@@ -40,16 +39,12 @@ export function ReaderViewport(props: ReaderViewportProps) {
       data-testid="reader-viewport"
       tabIndex={0}
       onKeyDown={props.onKeyDown}
-      onPointerDown={() => {
-        hostRef?.focus({ preventScroll: true });
-      }}
       onDragEnter={props.onDragEnter}
       onDragOver={props.onDragOver}
       onDragLeave={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) props.onDragLeave();
       }}
       onDrop={props.onDrop}
-      onPointerUp={props.onPointerUp}
       onScroll={(event) => props.onScroll(event.currentTarget.scrollTop)}
     >
       <Show when={props.activeDocument} fallback={<EmptyReader onOpen={props.onOpen} />}>

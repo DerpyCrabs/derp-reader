@@ -216,7 +216,7 @@ input {
   padding: 0 8px;
   border: 1px solid #d0d0d0;
   border-radius: 5px;
-  background: #f7f7f7;
+  background: #ffffff;
   text-align: center;
   color: #1f1f1f;
   font-weight: 600;
@@ -877,22 +877,28 @@ div.list-row:hover {
 .selection-menu {
   position: fixed;
   z-index: 220;
+  box-sizing: border-box;
   width: max-content;
   max-width: min(760px, calc(100vw - 24px));
   overflow: hidden;
-  padding: 5px;
+  padding: 6px;
   border: 1px solid #c8c8c8;
   border-radius: 8px;
   background: #ffffff;
   box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 .selection-actions {
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 116px;
   align-items: center;
-  flex-wrap: nowrap;
   gap: 4px;
-  max-width: calc(100vw - 34px);
+  width: max-content;
+  max-width: 100%;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -902,10 +908,12 @@ div.list-row:hover {
 }
 
 .selection-menu button {
+  justify-content: center;
   min-height: 34px;
   padding: 0 9px;
   border-radius: 7px;
-  flex: 0 0 auto;
+  width: 116px;
+  min-width: 0;
 }
 
 .selection-preview-text {
@@ -914,11 +922,11 @@ div.list-row:hover {
   min-width: 100%;
   max-width: 100%;
   max-height: 176px;
-  margin-top: 5px;
+  margin: 0;
   padding: 7px 8px;
   border: 1px solid #d4d9d6;
   border-radius: 7px;
-  background: #f7f7f7;
+  background: #ffffff;
   color: #333333;
   font: inherit;
   font-size: 0.86rem;
@@ -951,23 +959,79 @@ div.list-row:hover {
 }
 
 .selection-result {
-  margin-top: 7px;
+  box-sizing: border-box;
+  width: 0;
+  min-width: 100%;
+  max-width: 100%;
+  min-height: 0;
+  max-height: 220px;
+  margin: 0;
   padding: 9px 10px;
   border: 1px solid #d0d0d0;
   border-radius: 7px;
   background: #f0f0f0;
   color: #2a2a2a;
+  font-size: 0.88rem;
   line-height: 1.42;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+  scrollbar-color: #9a9a9a #eeeeee;
+  scrollbar-width: thin;
+}
+
+.selection-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d0d0d0;
+  border-radius: 7px;
+  background: #f0f0f0;
+  color: #555555;
+  font-size: 0.92rem;
+}
+
+.loader-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentcolor;
+  animation: loader-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes loader-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.selection-result::-webkit-scrollbar {
+  width: 10px;
+}
+
+.selection-result::-webkit-scrollbar-track {
+  background: #eeeeee;
+}
+
+.selection-result::-webkit-scrollbar-thumb {
+  border: 2px solid #eeeeee;
+  border-radius: 999px;
+  background: #9a9a9a;
 }
 
 .selection-result strong {
   display: block;
   margin-bottom: 4px;
-}
-
-.selection-result p {
-  margin: 0 0 8px;
-  white-space: pre-wrap;
 }
 
 .selection-preview {
@@ -1156,9 +1220,31 @@ div.list-row:hover {
   text-transform: uppercase;
 }
 
-.message p {
-  margin: 0;
-  white-space: pre-wrap;
+.markdown-content {
+  overflow-wrap: anywhere;
+}
+
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0 0 8px;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 18px;
+}
+
+.markdown-content li {
+  margin: 2px 0;
 }
 
 .chat-composer {
@@ -1502,11 +1588,28 @@ div.list-row:hover {
 
 .theme-dark .selection-result,
 .theme-dark .selection-preview-text,
+.theme-dark .selection-loading,
 .theme-dark .result-text,
 .theme-dark .message.assistant {
   border-color: #444444;
   background: #202020;
   color: #e8e8e8;
+}
+
+.theme-dark .selection-result,
+.theme-dark .selection-preview-text {
+  scrollbar-color: #555555 #181818;
+}
+
+.theme-dark .selection-result::-webkit-scrollbar-track,
+.theme-dark .selection-preview-text::-webkit-scrollbar-track {
+  background: #181818;
+}
+
+.theme-dark .selection-result::-webkit-scrollbar-thumb,
+.theme-dark .selection-preview-text::-webkit-scrollbar-thumb {
+  border-color: #181818;
+  background: #555555;
 }
 
 .theme-dark .notes-pane textarea {

@@ -1,0 +1,186 @@
+import { Show, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
+import { useQueryClient } from "@tanstack/solid-query";
+import { api, type ChatSelectionContext } from "../api";
+import type { DraftSelection } from "../stores/readerStore";
+import type { DocumentWithPages, SelectionRecord } from "../../shared/types";
+import { SelectionMenu, type FloatingMenu } from "./SelectionMenu";
+
+type SelectionAiTask = "translate" | "define";
+
+interface SelectionOverlayProps {
+  menu: FloatingMenu | null;
+  activeDocument: DocumentWithPages | null;
+  draftSelection: DraftSelection | null;
+  currentSelection: SelectionRecord | null;
+  selectionText: string;
+  canAddToCurrentChat: boolean;
+  onSelectionTextChange: (text: string) => void;
+  onNote: () => void;
+  onNewChat: () => void;
+  onAddToCurrentChat: () => void;
+  onError: (message: string) => void;
+}
+
+export function SelectionOverlay(props: SelectionOverlayProps) {
+  let requestVersion = 0;
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = createSignal("");
+  const [activeTask, setActiveTask] = createSignal<SelectionAiTask | null>(null);
+  const [result, setResult] = createSignal(null as Awaited<ReturnType<typeof fetchSelectionAi>> | null);
+
+  const selectionInput = (task: SelectionAiTask) => {
+    const draftContext: ChatSelectionContext | null = props.activeDocument && props.draftSelection
+      ? {
+          documentId: props.activeDocument.id,
+          pageId: props.draftSelection.pageId,
+          kind: props.draftSelection.kind,
+          text: props.draftSelection.text,
+          imageData: props.draftSelection.imageData ?? null,
+          region: props.draftSelection.region
+        }
+      : null;
+    if (draftContext?.kind === "text" && !draftContext.text?.trim()) return null;
+
+    const selection = props.currentSelection;
+    const text = draftContext?.kind === "text" ? draftContext.text ?? "" : selection ? "" : props.selectionText.trim();
+    if (!text && !selection && !draftContext) return null;
+
+    return {
+      task,
+      key: JSON.stringify({
+        task,
+        selectionId: selection?.id ?? null,
+        documentId: props.activeDocument?.id ?? null,
+        pageId: draftContext?.pageId ?? selection?.pageId ?? null,
+        kind: draftContext?.kind ?? selection?.kind ?? "text",
+        text: draftContext?.text ?? selection?.text ?? text,
+        imageData: draftContext?.imageData ?? selection?.imageData ?? null,
+        region: draftContext?.region ?? selection?.region ?? null
+      }),
+      text,
+      selection,
+      draftContext
+    };
+  };
+
+  async function fetchSelectionAi(input: NonNullable<ReturnType<typeof selectionInput>>, signal: AbortSignal) {
+    if (input.task === "translate") {
+      return (
+        await api.translate(
+          {
+            text: input.selection ? undefined : input.text,
+            selectionId: input.selection?.id,
+            selectionContext: input.draftContext,
+            sourceLanguage: props.activeDocument?.language,
+            targetLanguage: "English"
+          },
+          { signal }
+        )
+      ).result;
+    }
+
+    return (
+      await api.define(
+        {
+          text: input.selection ? undefined : input.text,
+          selectionId: input.selection?.id,
+          selectionContext: input.draftContext,
+          sourceLanguage: props.activeDocument?.language
+        },
+        { signal }
+      )
+    ).result;
+  }
+
+  const activeSelectionKey = createMemo(() => {
+    const draft = props.draftSelection;
+    const selection = props.currentSelection;
+    return JSON.stringify({
+      documentId: props.activeDocument?.id ?? null,
+      draft,
+      selectionId: selection?.id ?? null,
+      selectionText: selection?.text ?? props.selectionText
+    });
+  });
+
+  createEffect(() => {
+    activeSelectionKey();
+    requestVersion += 1;
+    void queryClient.cancelQueries({ queryKey: ["selection-ai"] });
+    setBusy("");
+    setActiveTask(null);
+    setResult(null);
+  });
+
+  onCleanup(() => {
+    requestVersion += 1;
+    void queryClient.cancelQueries({ queryKey: ["selection-ai"] });
+  });
+
+  const runSelectionAi = async (task: SelectionAiTask, options: { regenerate?: boolean } = {}) => {
+    const input = selectionInput(task);
+    if (!input) return;
+    requestVersion += 1;
+    void queryClient.cancelQueries({ queryKey: ["selection-ai"] });
+    setActiveTask(task);
+    if (!options.regenerate) setResult(null);
+
+    const queryKey = ["selection-ai", input.key] as const;
+    const cached = options.regenerate ? null : queryClient.getQueryData<NonNullable<ReturnType<typeof result>>>(queryKey);
+    if (cached) {
+      setResult(cached);
+      return;
+    }
+
+    if (options.regenerate) await queryClient.invalidateQueries({ queryKey });
+    const version = ++requestVersion;
+    setBusy(task === "translate" ? "Translating" : "Defining");
+    props.onError("");
+
+    try {
+      const nextResult = await queryClient.fetchQuery({
+        queryKey,
+        queryFn: ({ signal }) => fetchSelectionAi(input, signal),
+        staleTime: Infinity,
+        gcTime: 1000 * 60 * 60
+      });
+      if (requestVersion === version && selectionInput(task)?.key === input.key) {
+        setResult(nextResult);
+      }
+    } catch (error) {
+      if (requestVersion !== version) return;
+      if (error instanceof Error && error.name === "AbortError") return;
+      props.onError(error instanceof Error ? error.message : task === "translate" ? "Translation failed" : "Definition failed");
+    } finally {
+      if (requestVersion === version) setBusy("");
+    }
+  };
+
+  const regenerate = async () => {
+    const task = untrack(activeTask);
+    if (!task) return;
+    await runSelectionAi(task, { regenerate: true });
+  };
+
+  return (
+    <Show when={props.menu}>
+      {(menu) => (
+        <SelectionMenu
+          menu={menu()}
+          busy={busy()}
+          activeTask={activeTask()}
+          result={result()}
+          selectionText={props.selectionText}
+          canAddToCurrentChat={props.canAddToCurrentChat}
+          onSelectionTextChange={props.onSelectionTextChange}
+          onTranslate={() => void runSelectionAi("translate")}
+          onDefine={() => void runSelectionAi("define")}
+          onRegenerate={() => void regenerate()}
+          onNote={props.onNote}
+          onNewChat={props.onNewChat}
+          onAddToCurrentChat={props.onAddToCurrentChat}
+        />
+      )}
+    </Show>
+  );
+}

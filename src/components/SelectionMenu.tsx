@@ -2,9 +2,11 @@ import { Show } from "solid-js";
 import Languages from "lucide-solid/icons/languages";
 import MessageCircle from "lucide-solid/icons/message-circle";
 import Pencil from "lucide-solid/icons/pencil";
+import RefreshCw from "lucide-solid/icons/refresh-cw";
 import Sparkles from "lucide-solid/icons/sparkles";
 import type { AiResponse } from "../../shared/types";
 import type { FloatingMenuPosition } from "../readerGeometry";
+import { MarkdownContent } from "./MarkdownContent";
 
 export interface FloatingMenu extends FloatingMenuPosition {
   kind: "text" | "image";
@@ -13,19 +15,31 @@ export interface FloatingMenu extends FloatingMenuPosition {
 interface SelectionMenuProps {
   menu: FloatingMenu;
   busy: string;
+  activeTask: "translate" | "define" | null;
   result: AiResponse | null;
   selectionText: string;
   canAddToCurrentChat: boolean;
   onSelectionTextChange: (text: string) => void;
   onTranslate: () => void;
   onDefine: () => void;
+  onRegenerate: () => void;
   onNote: () => void;
   onNewChat: () => void;
   onAddToCurrentChat: () => void;
 }
 
 export function SelectionMenu(props: SelectionMenuProps) {
-  const actionBusy = () => Boolean(props.busy);
+  const isTranslateBusy = () => props.busy && props.activeTask === "translate";
+  const isDefineBusy = () => props.busy && props.activeTask === "define";
+  const shouldRegenerate = (task: "translate" | "define") => props.result && props.activeTask === task;
+  const runAiAction = (task: "translate" | "define") => {
+    if (shouldRegenerate(task)) {
+      props.onRegenerate();
+      return;
+    }
+    if (task === "translate") props.onTranslate();
+    else props.onDefine();
+  };
   const previewRows = () => {
     const availableRows = Math.max(1, Math.floor((props.menu.maxHeight - 62) / 28));
     const desiredRows = Math.max(1, Math.ceil(props.selectionText.length / 72), props.selectionText.split("\n").length);
@@ -34,7 +48,7 @@ export function SelectionMenu(props: SelectionMenuProps) {
   const runAction = (event: Event, action: () => void) => {
     event.preventDefault();
     event.stopPropagation();
-    if (!actionBusy()) action();
+    action();
   };
   const runActionFromKey = (event: KeyboardEvent, action: () => void) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -46,44 +60,47 @@ export function SelectionMenu(props: SelectionMenuProps) {
     "max-height": `${props.menu.maxHeight}px`,
     transform: props.menu.placement === "above" ? "translate(-50%, -100%)" : "translateX(-50%)"
   });
-
+  const stopShellPointerDown = (event: PointerEvent) => {
+    if ((event.target as Element | null)?.closest(".selection-copyable")) {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
   return (
     <div
       class="selection-menu"
       data-testid="selection-menu"
       style={menuStyle()}
-      onPointerDown={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
+      onPointerDown={stopShellPointerDown}
       onPointerUp={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
     >
       <div class="selection-actions">
         <button
           data-testid="menu-translate"
-          title="Translate"
-          disabled={actionBusy()}
-          onPointerDown={(event) => runAction(event, props.onTranslate)}
-          onKeyDown={(event) => runActionFromKey(event, props.onTranslate)}
+          title={shouldRegenerate("translate") ? "Regenerate translation" : "Translate"}
+          disabled={Boolean(isTranslateBusy())}
+          onPointerDown={(event) => runAction(event, () => runAiAction("translate"))}
+          onKeyDown={(event) => runActionFromKey(event, () => runAiAction("translate"))}
         >
-          <Languages size={16} />
+          {shouldRegenerate("translate") ? <RefreshCw size={16} /> : <Languages size={16} />}
           Translate
         </button>
         <button
           data-testid="menu-define"
-          title="Define"
-          disabled={actionBusy()}
-          onPointerDown={(event) => runAction(event, props.onDefine)}
-          onKeyDown={(event) => runActionFromKey(event, props.onDefine)}
+          title={shouldRegenerate("define") ? "Regenerate definition" : "Define"}
+          disabled={Boolean(isDefineBusy())}
+          onPointerDown={(event) => runAction(event, () => runAiAction("define"))}
+          onKeyDown={(event) => runActionFromKey(event, () => runAiAction("define"))}
         >
-          <Sparkles size={16} />
+          {shouldRegenerate("define") ? <RefreshCw size={16} /> : <Sparkles size={16} />}
           Define
         </button>
         <button
           data-testid="menu-note"
           title="Add note"
-          disabled={actionBusy()}
           onPointerDown={(event) => runAction(event, props.onNote)}
           onKeyDown={(event) => runActionFromKey(event, props.onNote)}
         >
@@ -93,7 +110,6 @@ export function SelectionMenu(props: SelectionMenuProps) {
         <button
           data-testid="menu-new-chat"
           title="Start new chat"
-          disabled={actionBusy()}
           onPointerDown={(event) => runAction(event, props.onNewChat)}
           onKeyDown={(event) => runActionFromKey(event, props.onNewChat)}
         >
@@ -104,7 +120,6 @@ export function SelectionMenu(props: SelectionMenuProps) {
           <button
             data-testid="menu-add-chat"
             title="Add to current chat"
-            disabled={actionBusy()}
             onPointerDown={(event) => runAction(event, props.onAddToCurrentChat)}
             onKeyDown={(event) => runActionFromKey(event, props.onAddToCurrentChat)}
           >
@@ -121,22 +136,20 @@ export function SelectionMenu(props: SelectionMenuProps) {
           rows={previewRows()}
           value={props.selectionText}
           onInput={(event) => props.onSelectionTextChange(event.currentTarget.value)}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            event.currentTarget.focus({ preventScroll: true });
-          }}
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
         />
       </Show>
       <Show when={props.busy === "Translating" || props.busy === "Defining"}>
-        <div class="selection-result">Working...</div>
+        <div class="selection-loading" data-testid="selection-loading">
+          <span class="loader-dot" />
+          {props.busy}...
+        </div>
       </Show>
       <Show when={props.result}>
         {(result) => (
-          <div class="selection-result" data-testid="ai-result">
-            <strong>{result().title}</strong>
-            <p>{result().content}</p>
+          <div class="selection-result selection-copyable" data-testid="ai-result">
+            <MarkdownContent content={result().content} />
           </div>
         )}
       </Show>

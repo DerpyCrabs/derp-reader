@@ -47,6 +47,8 @@ const rectDistance = (a: DOMRect, b: DOMRect) => {
   return Math.hypot(ax - bx, ay - by);
 };
 
+const rectForPoint = (point: { x: number; y: number }) => new DOMRect(point.x, point.y, 1, 1);
+
 const rectClusters = (rects: DOMRect[]) => {
   const clusters: DOMRect[][] = [];
   for (const rect of rects) {
@@ -84,19 +86,25 @@ const endpointRect = (node: Node | null, offset: number | undefined, bounds: Bou
   }
 };
 
-export const visibleRectForRange = (range: Range, focusNode?: Node | null, focusOffset?: number): DOMRect | null => {
+export const visibleRectForRange = (
+  range: Range,
+  focusNode?: Node | null,
+  focusOffset?: number,
+  pointer?: { x: number; y: number } | null
+): DOMRect | null => {
   const bounds = floatingBounds();
   const focusRect = endpointRect(focusNode ?? null, focusOffset, bounds);
   const rects = textLineRects(visibleRects(range, bounds));
   if (rects.length === 0) return null;
   const clusters = rectClusters(rects);
   if (clusters.length === 0) return null;
-  if (!focusRect) return unionRect(clusters.at(-1) ?? rects);
+  const referenceRect = pointer ? rectForPoint(pointer) : focusRect;
+  if (!referenceRect) return unionRect(clusters.at(-1) ?? rects);
 
   let bestCluster = clusters[0];
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const cluster of clusters) {
-    const distance = Math.min(...cluster.map((rect) => rectDistance(rect, focusRect)));
+    const distance = Math.min(...cluster.map((rect) => rectDistance(rect, referenceRect)));
     if (distance < bestDistance) {
       bestCluster = cluster;
       bestDistance = distance;
@@ -112,12 +120,12 @@ export const menuPositionForRect = (rect: DOMRect): FloatingMenuPosition => {
   const availableWidth = Math.max(280, bounds.right - bounds.left - inset * 2);
   const estimatedMenuWidth = Math.min(760, availableWidth);
   const minMenuHeight = 54;
-  const preferredMenuHeight = 224;
+  const compactMenuHeight = 116;
   const halfWidth = estimatedMenuWidth / 2;
   const x = Math.max(bounds.left + inset + halfWidth, Math.min(rect.left + rect.width / 2, bounds.right - inset - halfWidth));
   const availableAbove = Math.max(0, rect.top - gap - bounds.top - inset);
   const availableBelow = Math.max(0, bounds.bottom - rect.bottom - gap - inset);
-  const placeAbove = availableAbove >= preferredMenuHeight;
+  const placeAbove = availableAbove >= compactMenuHeight || availableAbove >= availableBelow;
   const maxHeight = Math.max(minMenuHeight, placeAbove ? availableAbove : availableBelow);
   const y = placeAbove
     ? Math.max(bounds.top + inset, rect.top - gap)

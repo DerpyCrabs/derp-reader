@@ -19,6 +19,7 @@ export interface ChatSelectionContext {
   pageId?: string | null;
   kind: SelectionKind;
   text?: string;
+  imageData?: string | null;
   region?: SelectionRecord["region"];
 }
 
@@ -121,15 +122,23 @@ export const api = {
   async deleteNote(noteId: string) {
     return request<{ deleted: boolean }>(`/api/notes/${noteId}`, { method: "DELETE" });
   },
-  async translate(input: { text?: string; selectionId?: string; selectionContext?: ChatSelectionContext | null; sourceLanguage?: string | null; targetLanguage?: string }) {
+  async translate(
+    input: { text?: string; selectionId?: string; selectionContext?: ChatSelectionContext | null; sourceLanguage?: string | null; targetLanguage?: string },
+    options: Pick<RequestInit, "signal"> = {}
+  ) {
     return request<{ result: AiResponse }>("/api/ai/translate", {
       method: "POST",
+      signal: options.signal,
       body: JSON.stringify(input)
     });
   },
-  async define(input: { text?: string; selectionId?: string; selectionContext?: ChatSelectionContext | null; sourceLanguage?: string | null }) {
+  async define(
+    input: { text?: string; selectionId?: string; selectionContext?: ChatSelectionContext | null; sourceLanguage?: string | null },
+    options: Pick<RequestInit, "signal"> = {}
+  ) {
     return request<{ result: AiResponse }>("/api/ai/define", {
       method: "POST",
+      signal: options.signal,
       body: JSON.stringify(input)
     });
   },

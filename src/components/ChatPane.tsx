@@ -3,6 +3,7 @@ import ArrowUp from "lucide-solid/icons/arrow-up";
 import MessageCircle from "lucide-solid/icons/message-circle";
 import Trash2 from "lucide-solid/icons/trash-2";
 import type { ChatRecord, ChatWithMessages, SelectionRecord } from "../../shared/types";
+import { MarkdownContent } from "./MarkdownContent";
 
 interface ChatPaneProps {
   chats: ChatRecord[];
@@ -68,7 +69,7 @@ export function ChatPane(props: ChatPaneProps) {
             {(message) => (
               <div class={`message ${message.role}`}>
                 <strong>{message.role}</strong>
-                <p>{message.content}</p>
+                <MarkdownContent content={message.content} />
               </div>
             )}
           </For>

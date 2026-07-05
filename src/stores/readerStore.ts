@@ -15,6 +15,7 @@ import type { PdfDocumentProxy } from "../components/ReaderPage";
 export interface DraftSelection {
   kind: "text" | "image";
   text: string;
+  imageData?: string | null;
   pageId: string | null;
   region: SelectionRegion | null;
 }

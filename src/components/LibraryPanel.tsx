@@ -1,12 +1,11 @@
-import { For, Show, createMemo } from "solid-js";
+import { For, Show } from "solid-js";
 import FolderOpen from "lucide-solid/icons/folder-open";
 import Upload from "lucide-solid/icons/upload";
 import Search from "lucide-solid/icons/search";
-import type { DocumentWithPages, LibraryLocation, ReaderDocument, SearchResult } from "../../shared/types";
+import type { DocumentWithPages, ReaderDocument, SearchResult } from "../../shared/types";
 
 interface LibraryPanelProps {
   documents: ReaderDocument[];
-  locations: LibraryLocation[];
   searchQuery: string;
   searchResults: SearchResult[];
   activeDocument: DocumentWithPages | null;
@@ -17,17 +16,6 @@ interface LibraryPanelProps {
   onOpenSearchResult: (result: SearchResult) => void;
 }
 export function LibraryPanel(props: LibraryPanelProps) {
-  const recentLocations = createMemo(() => {
-    const seen = new Set<string>();
-    return props.locations.filter((location) => {
-      if (location.documentId && location.documentId === props.activeDocument?.id) return false;
-      const key = location.documentId ?? `${location.kind}:${location.name}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  });
-
   return (
     <aside class="library-panel app-scrollbar">
       <div class="library-open-actions">
@@ -84,23 +72,6 @@ export function LibraryPanel(props: LibraryPanelProps) {
           </For>
         </Show>
       </section>
-
-      <Show when={recentLocations().length > 0}>
-        <section>
-          <h2>Recent</h2>
-          <For each={recentLocations()}>
-            {(location) => (
-              <button
-                class="list-row"
-                data-testid="location-row"
-                onClick={() => location.documentId && props.onOpenDocument(location.documentId)}
-              >
-                <span>{location.name}</span>
-              </button>
-            )}
-          </For>
-        </section>
-      </Show>
     </aside>
   );
 }

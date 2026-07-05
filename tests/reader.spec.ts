@@ -1,8 +1,102 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
+import { inflateSync } from "node:zlib";
 import { zipSync } from "fflate";
 
 const apiBase = process.env.TEST_API_BASE ?? "http://127.0.0.1:3101";
+const realAi = process.env.AI_TEST_MOCK !== "1";
+
+const countVisibleNativeSelectionPixels = (png: Buffer) => {
+  const signatureLength = 8;
+  let offset = signatureLength;
+  let width = 0;
+  let height = 0;
+  let colorType = 0;
+  const idat: Buffer[] = [];
+
+  while (offset < png.length) {
+    const length = png.readUInt32BE(offset);
+    const type = png.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = png.subarray(offset + 8, offset + 8 + length);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idat.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+    offset += 12 + length;
+  }
+
+  expect([2, 6]).toContain(colorType);
+  const bytesPerPixel = colorType === 6 ? 4 : 3;
+  const rowLength = width * bytesPerPixel;
+  const inflated = inflateSync(Buffer.concat(idat));
+  const pixels = Buffer.alloc(height * rowLength);
+  let sourceOffset = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[sourceOffset];
+    sourceOffset += 1;
+    const rowStart = y * rowLength;
+    for (let x = 0; x < rowLength; x += 1) {
+      const raw = inflated[sourceOffset + x];
+      const left = x >= bytesPerPixel ? pixels[rowStart + x - bytesPerPixel] : 0;
+      const up = y > 0 ? pixels[rowStart + x - rowLength] : 0;
+      const upLeft = y > 0 && x >= bytesPerPixel ? pixels[rowStart + x - rowLength - bytesPerPixel] : 0;
+      let value = raw;
+      if (filter === 1) value += left;
+      else if (filter === 2) value += up;
+      else if (filter === 3) value += Math.floor((left + up) / 2);
+      else if (filter === 4) {
+        const p = left + up - upLeft;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - up);
+        const pc = Math.abs(p - upLeft);
+        value += pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+      }
+      pixels[rowStart + x] = value & 0xff;
+    }
+    sourceOffset += rowLength;
+  }
+
+  let bluePixels = 0;
+  for (let i = 0; i < pixels.length; i += bytesPerPixel) {
+    const red = pixels[i];
+    const green = pixels[i + 1];
+    const blue = pixels[i + 2];
+    if (blue > 130 && blue - red > 25 && blue - green > 5) bluePixels += 1;
+  }
+  return bluePixels;
+};
+
+const expectAiResult = async (locator: Locator, mockText: string) => {
+  if (realAi) {
+    await expect(locator).not.toContainText("AI provider not configured", { timeout: 30_000 });
+    await expect(locator).not.toContainText(/failed|Bad Request|Invalid url|API/i, { timeout: 30_000 });
+    await expect.poll(async () => ((await locator.textContent()) ?? "").trim().length, { timeout: 30_000 }).toBeGreaterThan(0);
+    await expect(locator).not.toContainText("Test translation");
+    await expect(locator).not.toContainText("Test definitions");
+    await expect(locator).not.toContainText("Test assistant");
+    return;
+  }
+  await expect(locator).toContainText(mockText);
+};
+
+const expectAssistantMessage = async (messages: Array<{ role: string; content: string }>, mockText: string) => {
+  const assistant = messages.find((message) => message.role === "assistant");
+  expect(assistant).toBeTruthy();
+  if (realAi) {
+    expect(assistant!.content.trim().length).toBeGreaterThan(0);
+    expect(assistant!.content).not.toContain("AI provider not configured");
+    expect(assistant!.content).not.toMatch(/Bad Request|Invalid url|API/i);
+    expect(assistant!.content).not.toContain("Test assistant");
+    return;
+  }
+  expect(assistant!.content).toContain(mockText);
+};
 const openSettings = async (page: Page) => {
   if (await page.getByTestId("settings-menu").isVisible().catch(() => false)) return;
   await page.getByTestId("settings-menu-button").click();
@@ -242,10 +336,15 @@ const importBackendPath = async (path: string) => {
 };
 
 test("product AI mode reports missing provider instead of returning mocks", async () => {
+  test.skip(realAi, "Real-AI runs intentionally configure a provider.");
   const originalMock = process.env.AI_TEST_MOCK;
   const originalKey = process.env.OPENAI_API_KEY;
+  const originalLmStudioBase = process.env.LM_STUDIO_BASE_URL;
+  const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
   delete process.env.AI_TEST_MOCK;
   delete process.env.OPENAI_API_KEY;
+  delete process.env.LM_STUDIO_BASE_URL;
+  delete process.env.OPENROUTER_API_KEY;
   try {
     const { generateAiResponse } = await import("../server/ai");
     const result = await generateAiResponse({
@@ -253,7 +352,7 @@ test("product AI mode reports missing provider instead of returning mocks", asyn
       text: "Bonjour"
     });
     expect(result.title).toBe("AI provider not configured");
-    expect(result.content).toContain("Set OPENAI_API_KEY");
+    expect(result.content).toContain("Set LM_STUDIO_BASE_URL");
     expect(result.content).not.toContain("Test translation");
     expect(result.provider).toBe("none");
   } finally {
@@ -261,6 +360,10 @@ test("product AI mode reports missing provider instead of returning mocks", asyn
     else process.env.AI_TEST_MOCK = originalMock;
     if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = originalKey;
+    if (originalLmStudioBase === undefined) delete process.env.LM_STUDIO_BASE_URL;
+    else process.env.LM_STUDIO_BASE_URL = originalLmStudioBase;
+    if (originalOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalOpenRouterKey;
   }
 });
 
@@ -383,9 +486,9 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await expect(page.getByTestId("selection-menu")).toBeVisible();
 
   await page.getByTestId("menu-translate").click();
-  await expect(page.getByTestId("ai-result")).toContainText("Test translation");
+  await expectAiResult(page.getByTestId("ai-result"), "Test translation");
   await page.getByTestId("menu-define").click();
-  await expect(page.getByTestId("ai-result")).toContainText("Test definitions");
+  await expectAiResult(page.getByTestId("ai-result"), "Test definitions");
   await expect(page.getByTestId("ai-result")).not.toContainText("Test translation");
 
   await page.getByTestId("menu-note").click();
@@ -428,7 +531,7 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
 
   await page.getByTestId("chat-input").fill("Explain the tone.");
   await page.getByTestId("send-chat").click();
-  await expect(page.getByTestId("chat-messages")).toContainText("Test assistant");
+  await expectAiResult(page.getByTestId("chat-messages"), "Test assistant");
   await expect(page.getByRole("button", { name: "Selection discussion" })).toBeVisible();
 
   const firstPageBox = await pageText.boundingBox();
@@ -481,6 +584,119 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await openAssistant(page);
   await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document");
   await expect(page.getByTestId("chat-context-pill")).toHaveCount(0);
+});
+
+test("caches selection AI results and regenerates through query cache", async ({ page }, testInfo) => {
+  const title = `Selection AI cache ${testInfo.project.name}`;
+  await createTextDocument(title);
+  let defineCount = 0;
+  let translateCount = 0;
+  await page.route("**/api/ai/define", async (route) => {
+    defineCount += 1;
+    await route.fulfill({
+      json: {
+        result: {
+          title: "Definition",
+          content: defineCount === 1 ? "Cached definition" : "Regenerated definition",
+          provider: "test"
+        }
+      }
+    });
+  });
+  await page.route("**/api/ai/translate", async (route) => {
+    translateCount += 1;
+    await route.fulfill({
+      json: {
+        result: {
+          title: "Translation",
+          content: "Cached translation",
+          provider: "test"
+        }
+      }
+    });
+  });
+
+  await page.goto("/");
+  await selectTextIn(page, "page-text", "Le petit prince");
+  await page.getByTestId("menu-define").click();
+  await expect(page.getByTestId("ai-result")).toContainText("Cached definition");
+  await page.getByTestId("menu-translate").click();
+  await expect(page.getByTestId("ai-result")).toContainText("Cached translation");
+  await page.getByTestId("menu-define").click();
+  await expect(page.getByTestId("ai-result")).toContainText("Cached definition");
+  expect(defineCount).toBe(1);
+  expect(translateCount).toBe(1);
+
+  await page.getByTestId("menu-define").click();
+  await expect(page.getByTestId("ai-result")).toContainText("Regenerated definition");
+  expect(defineCount).toBe(2);
+});
+
+test("ignores stale selection AI work after the selection changes", async ({ page }, testInfo) => {
+  const title = `Selection AI race ${testInfo.project.name}`;
+  await createTextDocument(title);
+  let firstRequestSeen = false;
+  await page.route("**/api/ai/define", async (route) => {
+    if (!firstRequestSeen) {
+      firstRequestSeen = true;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.fulfill({
+        json: { result: { title: "Definition", content: "Old stale answer", provider: "test" } }
+      }).catch(() => {});
+      return;
+    }
+    await route.fulfill({
+      json: { result: { title: "Definition", content: "Fresh answer", provider: "test" } }
+    });
+  });
+
+  await page.goto("/");
+  await selectTextIn(page, "page-text", "Le petit prince");
+  await page.getByTestId("menu-define").click();
+  await expect(page.getByTestId("selection-loading")).toBeVisible();
+
+  await selectTextIn(page, "page-text", "la fleur");
+  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/la fleur\.?/);
+  await expect(page.getByTestId("selection-loading")).toHaveCount(0);
+  await expect(page.getByTestId("ai-result")).toHaveCount(0);
+  await page.waitForTimeout(350);
+  await expect(page.getByText("Old stale answer")).toHaveCount(0);
+
+  await page.getByTestId("menu-define").click();
+  await expect(page.getByTestId("ai-result")).toContainText("Fresh answer");
+});
+
+test("renders markdown AI output inside the floating menu", async ({ page }, testInfo) => {
+  const title = `Selection markdown ${testInfo.project.name}`;
+  await createTextDocument(title);
+  await page.route("**/api/ai/define", async (route) => {
+    await route.fulfill({
+      json: {
+        result: {
+          title: "Definition",
+          content: "* **Political** career\n* **Medical** concerns\n* **Literary** context",
+          provider: "test"
+        }
+      }
+    });
+  });
+
+  await page.goto("/");
+  await selectTextIn(page, "page-text", "Le petit prince");
+  await page.getByTestId("menu-define").click();
+
+  const result = page.getByTestId("ai-result");
+  await expect(result.locator("li")).toHaveCount(3);
+  await expect(result.locator("strong").first()).toHaveText("Political");
+  const contained = await page.evaluate(() => {
+    const menu = document.querySelector<HTMLElement>("[data-testid='selection-menu']");
+    const resultBox = document.querySelector<HTMLElement>("[data-testid='ai-result']");
+    if (!menu || !resultBox) throw new Error("Expected menu and result");
+    const menuRect = menu.getBoundingClientRect();
+    const resultRect = resultBox.getBoundingClientRect();
+    return resultRect.left >= menuRect.left && resultRect.right <= menuRect.right && resultRect.bottom <= menuRect.bottom;
+  });
+  expect(contained).toBe(true);
 });
 
 test("opens picked PDFs through the browser picker and reopens stored content", async ({ page }, testInfo) => {
@@ -767,9 +983,12 @@ test("keeps the selected PDF page mounted while the selection menu is open", asy
   await expect(
     page.evaluate(() => ({
       layerConnected: Boolean((window as Window & { selectedPdfLayer?: HTMLElement }).selectedPdfLayer?.isConnected),
+      sameLayer:
+        (window as Window & { selectedPdfLayer?: HTMLElement }).selectedPdfLayer ===
+        document.querySelector<HTMLElement>("[data-testid='pdf-text-layer']"),
       selectionText: window.getSelection()?.toString().replace(/\s+/g, " ").trim() ?? ""
     }))
-  ).resolves.toEqual({ layerConnected: true, selectionText: "selected phrase 1" });
+  ).resolves.toEqual({ layerConnected: true, sameLayer: true, selectionText: "selected phrase 1" });
 
   await page.getByTestId("reader-viewport").evaluate((viewport) => {
     viewport.scrollTop += viewport.clientHeight * 5;
@@ -780,10 +999,13 @@ test("keeps the selected PDF page mounted while the selection menu is open", asy
     .poll(() =>
       page.evaluate(() => ({
         layerConnected: Boolean((window as Window & { selectedPdfLayer?: HTMLElement }).selectedPdfLayer?.isConnected),
+        sameLayer:
+          (window as Window & { selectedPdfLayer?: HTMLElement }).selectedPdfLayer ===
+          document.querySelector<HTMLElement>("[data-testid='pdf-text-layer']"),
         selectionText: window.getSelection()?.toString().replace(/\s+/g, " ").trim() ?? ""
       }))
     )
-    .toEqual({ layerConnected: true, selectionText: "selected phrase 1" });
+    .toEqual({ layerConnected: true, sameLayer: true, selectionText: "selected phrase 1" });
 });
 
 test("opens the floating menu for PDF selections spanning pages without scrolling", async ({ page }, testInfo) => {
@@ -810,21 +1032,29 @@ test("opens the floating menu for PDF selections spanning pages without scrollin
     viewport.dispatchEvent(new Event("scroll", { bubbles: true }));
   });
   await expect(page.getByTestId("pdf-text-layer").nth(1)).toContainText("Cross page end selection");
-  await page.evaluate(() => {
-    const spans = [...document.querySelectorAll<HTMLSpanElement>("[data-testid='pdf-text-layer'] span")];
+  const endPoint = await page.evaluate(() => {
+    const spans = [...document.querySelectorAll<HTMLSpanElement>("[data-testid='pdf-text-layer'] span")]
+      .filter((span) => {
+        const rect = span.getBoundingClientRect();
+        return rect.width > 20 && rect.height > 5;
+      });
     const first = spans.find((span) => span.textContent?.includes("Cross page start"));
     const second = spans.find((span) => span.textContent?.includes("Cross page end"));
     if (!first?.firstChild || !second?.firstChild) throw new Error("Expected cross-page PDF text spans");
     const firstText = first.textContent ?? "";
     const secondText = second.textContent ?? "";
-    const range = document.createRange();
-    range.setStart(first.firstChild, firstText.indexOf("start"));
-    range.setEnd(second.firstChild, secondText.indexOf("selection") + "selection".length);
     const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    selection?.setBaseAndExtent(
+      first.firstChild,
+      firstText.indexOf("start"),
+      second.firstChild,
+      secondText.indexOf("selection") + "selection".length
+    );
+    const endRect = second.getBoundingClientRect();
+    return { x: endRect.right - 2, y: endRect.top + endRect.height / 2 };
   });
+  await page.mouse.move(endPoint.x, endPoint.y);
+  await page.mouse.up();
 
   await expect(page.getByTestId("selection-menu")).toBeVisible();
   await expect(page.getByTestId("selection-preview-text")).toHaveValue(/start selection.*Cross page end selection/);
@@ -896,6 +1126,426 @@ test("keeps the floating menu outside ordinary multi-line PDF selections", async
   });
   expect(geometry.overlaps).toBe(false);
   expect(geometry.distance).toBeLessThan(260);
+});
+
+test("keeps the final PDF line after the floating menu opens from a real drag", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-drag-selection-final-line-${suffix}.pdf`);
+  await writeFile(
+    pdfPath,
+    makePdfLines([
+      "Seneca once remarked of Socrates that it was his death by hem-lock",
+      "that made him great. With reason Socrates death demonstrated",
+      "the steadfastness of his philosophical principles and his belief",
+      "that death offered nothing to fear. When Seneca himself then",
+      "was ordered to commit suicide by Nero in sixty five, we might",
+      "believe Tacitus account of calm philosophy with his friends",
+      "as the blood drained out of his veins. In Tacitus depiction",
+      "we see, for once, a much criticized figure living",
+      "up to the principles he preached."
+    ])
+  );
+  await importBackendPath(pdfPath);
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer")).toContainText("up to the principles");
+  const drag = await page.getByTestId("pdf-text-layer").evaluate((layer) => {
+    const visibleSpans = [...layer.querySelectorAll("span")]
+      .map((span) => {
+        const rect = span.getBoundingClientRect();
+        return { text: span.textContent ?? "", rect };
+      })
+      .filter(({ rect }) => rect.width > 20 && rect.height > 5);
+    const start = visibleSpans.find(({ text }) => text.includes("Seneca once remarked"));
+    const end = visibleSpans.find(({ text }) => text.includes("up to the principles"));
+    if (!start || !end) throw new Error("Expected visible PDF spans for drag selection");
+    return {
+      start: { x: start.rect.left + 4, y: start.rect.top + start.rect.height / 2 },
+      end: { x: end.rect.left + Math.min(end.rect.width - 4, 260), y: end.rect.top + end.rect.height / 2 }
+    };
+  });
+  const hitTargets = await page.evaluate((points) => {
+    const menu = document.querySelector<HTMLElement>("[data-testid='selection-menu']");
+    const menuRect = menu?.getBoundingClientRect();
+    const describe = (point: { x: number; y: number }) => {
+      const element = document.elementFromPoint(point.x, point.y);
+      return {
+        tag: element?.tagName ?? null,
+        className: element instanceof HTMLElement ? element.className : null,
+        inTextLayer: Boolean(element?.closest?.(".textLayer")),
+        text: element?.textContent?.slice(0, 80) ?? null
+      };
+    };
+    return {
+      menu: menuRect
+        ? { left: menuRect.left, top: menuRect.top, right: menuRect.right, bottom: menuRect.bottom }
+        : null,
+      start: describe(points.start),
+      end: describe(points.end)
+    };
+  }, drag);
+  expect(hitTargets.start.inTextLayer).toBe(true);
+
+  await page.mouse.move(drag.start.x, drag.start.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.end.x, drag.end.y, { steps: 24 });
+  await page.mouse.up();
+
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/up to the principles/);
+  await expect
+    .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
+    .toContain("up to the principles");
+});
+
+test("keeps native PDF highlight when pointerup lands outside selected text", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-pointerup-outside-selection-${suffix}.pdf`);
+  await writeFile(
+    pdfPath,
+    makePdfLines([
+      "Prelude line before the selected range",
+      "Native selection should stay highlighted after pointer release",
+      "outside the selected glyphs in page whitespace",
+      "Trailing line below the selected range"
+    ])
+  );
+  await importBackendPath(pdfPath);
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer")).toContainText("Native selection");
+  const drag = await page.getByTestId("pdf-text-layer").evaluate((layer) => {
+    const spans = [...layer.querySelectorAll("span")]
+      .map((span) => {
+        const rect = span.getBoundingClientRect();
+        return { text: span.textContent ?? "", rect };
+      })
+      .filter(({ rect }) => rect.width > 20 && rect.height > 5);
+    const start = spans.find(({ text }) => text.includes("Native selection"));
+    const end = spans.find(({ text }) => text.includes("outside the selected glyphs"));
+    if (!start || !end) throw new Error("Expected visible PDF spans for outside-pointerup selection");
+    return {
+      start: { x: start.rect.left + 4, y: start.rect.top + start.rect.height / 2 },
+      end: { x: end.rect.left + Math.min(end.rect.width - 4, 300), y: end.rect.top + end.rect.height / 2 },
+      release: { x: end.rect.right + 80, y: end.rect.bottom + 28 }
+    };
+  });
+  await page.mouse.move(drag.start.x, drag.start.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.end.x, drag.end.y, { steps: 20 });
+  await page.mouse.move(drag.release.x, drag.release.y, { steps: 4 });
+  const beforeRelease = await page.evaluate(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return { text: "", rectCount: 0 };
+    return {
+      text: selection.toString(),
+      rectCount: selection.getRangeAt(0).getClientRects().length
+    };
+  });
+  expect(beforeRelease.text.trim().length).toBeGreaterThan(0);
+  expect(beforeRelease.rectCount).toBeGreaterThan(0);
+  await page.mouse.up();
+
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  const menuReleaseGeometry = await page.evaluate((releasePoint) => {
+    const menu = document.querySelector<HTMLElement>("[data-testid='selection-menu']");
+    if (!menu) throw new Error("Expected selection menu");
+    const rect = menu.getBoundingClientRect();
+    return {
+      coversRelease: releasePoint.x >= rect.left && releasePoint.x <= rect.right && releasePoint.y >= rect.top && releasePoint.y <= rect.bottom,
+      rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      releasePoint
+    };
+  }, drag.release);
+  expect(menuReleaseGeometry.coversRelease).toBe(false);
+  await expect.poll(async () => page.evaluate(() => window.getSelection()?.toString().trim().length ?? 0)).toBeGreaterThan(0);
+  const nativeSelection = await page.evaluate(() => {
+    const selection = window.getSelection();
+    const activeElement = document.activeElement;
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return { text: "", rectCount: 0 };
+    return {
+      text: selection.toString(),
+      rectCount: selection.getRangeAt(0).getClientRects().length,
+      activeTestId: activeElement instanceof HTMLElement ? activeElement.dataset.testid ?? "" : "",
+      activeClass: activeElement instanceof HTMLElement ? activeElement.className : ""
+    };
+  });
+  expect(nativeSelection.text.trim().length).toBeGreaterThan(0);
+  expect(nativeSelection.rectCount).toBeGreaterThan(0);
+  expect(nativeSelection.activeTestId).not.toBe("selection-preview-text");
+  expect(String(nativeSelection.activeClass)).not.toContain("selection-preview-text");
+  const selectionClip = await page.evaluate(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) throw new Error("Expected native selection");
+    const rect = [...selection.getRangeAt(0).getClientRects()].find((item) => item.width > 20 && item.height > 5);
+    if (!rect) throw new Error("Expected a visible selection rect");
+    return {
+      x: Math.max(0, Math.floor(rect.left)),
+      y: Math.max(0, Math.floor(rect.top)),
+      width: Math.max(1, Math.ceil(rect.width)),
+      height: Math.max(1, Math.ceil(rect.height))
+    };
+  });
+  const selectedPixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: selectionClip }));
+  expect(selectedPixels).toBeGreaterThan(100);
+});
+
+test("keeps native PDF highlight when pointerup lands in the page gap", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-pointerup-page-gap-${suffix}.pdf`);
+  await writeFile(
+    pdfPath,
+    makePdfPages([
+      "Gap release should preserve native PDF selection highlight",
+      "Second page gives the pointer somewhere non-text to land"
+    ])
+  );
+  await importBackendPath(pdfPath);
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer").first()).toContainText("Gap release");
+  const drag = await page.evaluate(() => {
+    const layers = [...document.querySelectorAll<HTMLElement>("[data-testid='pdf-text-layer']")];
+    const firstLayer = layers.find((layer) => layer.textContent?.includes("Gap release"));
+    const secondPage = document.querySelector<HTMLElement>("[data-page-index='1']");
+    const span = [...(firstLayer?.querySelectorAll("span") ?? [])].find((item) => item.textContent?.includes("Gap release"));
+    if (!firstLayer || !secondPage || !span) throw new Error("Expected two PDF pages and first-page text");
+    const textRect = span.getBoundingClientRect();
+    const firstPageRect = firstLayer.closest<HTMLElement>(".page-frame")!.getBoundingClientRect();
+    const secondPageRect = secondPage.getBoundingClientRect();
+    return {
+      start: { x: textRect.left + 4, y: textRect.top + textRect.height / 2 },
+      end: { x: Math.min(textRect.right - 4, textRect.left + 360), y: textRect.top + textRect.height / 2 },
+      release: { x: textRect.left + 260, y: (firstPageRect.bottom + secondPageRect.top) / 2 }
+    };
+  });
+
+  await page.mouse.move(drag.start.x, drag.start.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.end.x, drag.end.y, { steps: 20 });
+  await page.mouse.move(drag.release.x, drag.release.y, { steps: 4 });
+  const beforeReleaseClip = await page.evaluate(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) throw new Error("Expected native selection before release");
+    const rect = [...selection.getRangeAt(0).getClientRects()].find((item) => item.width > 20 && item.height > 5);
+    if (!rect) throw new Error("Expected a visible selection rect before release");
+    return {
+      x: Math.max(0, Math.floor(rect.left)),
+      y: Math.max(0, Math.floor(rect.top)),
+      width: Math.max(1, Math.ceil(rect.width)),
+      height: Math.max(1, Math.ceil(rect.height))
+    };
+  });
+  const beforeReleasePixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: beforeReleaseClip }));
+  await page.mouse.up();
+
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  await page.waitForTimeout(150);
+  const selectionClip = await page.evaluate(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) throw new Error("Expected native selection");
+    const rect = [...selection.getRangeAt(0).getClientRects()].find((item) => item.width > 20 && item.height > 5);
+    if (!rect) throw new Error("Expected a visible selection rect");
+    return {
+      x: Math.max(0, Math.floor(rect.left)),
+      y: Math.max(0, Math.floor(rect.top)),
+      width: Math.max(1, Math.ceil(rect.width)),
+      height: Math.max(1, Math.ceil(rect.height))
+    };
+  });
+  const selectedPixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: selectionClip }));
+  expect(beforeReleasePixels).toBeGreaterThan(20);
+  expect(selectedPixels).toBeGreaterThan(beforeReleasePixels * 0.7);
+});
+
+test("keeps native PDF highlight when pointerup lands outside the reader text", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-pointerup-outside-reader-text-${suffix}.pdf`);
+  await writeFile(
+    pdfPath,
+    makePdfLines([
+      "Pointer release outside document text should not destroy highlight",
+      "The selected sentence remains blue after the floating menu appears",
+      "A final line gives the drag enough real PDF text to select"
+    ])
+  );
+  await importBackendPath(pdfPath);
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer")).toContainText("Pointer release");
+  const drag = await page.evaluate(() => {
+    const layer = document.querySelector<HTMLElement>("[data-testid='pdf-text-layer']");
+    const spans = [...(layer?.querySelectorAll("span") ?? [])]
+      .map((span) => {
+        const rect = span.getBoundingClientRect();
+        return { text: span.textContent ?? "", rect };
+      })
+      .filter(({ rect }) => rect.width > 20 && rect.height > 5);
+    const start = spans.find(({ text }) => text.includes("Pointer release"));
+    const end = spans.find(({ text }) => text.includes("floatin")) ?? spans[1];
+    const pageFrame = layer?.closest<HTMLElement>("[data-page-index]");
+    if (!start || !end || !pageFrame) {
+      throw new Error(`Expected visible PDF text and page frame: ${JSON.stringify(spans.map(({ text }) => text))}`);
+    }
+    const frameRect = pageFrame.getBoundingClientRect();
+    return {
+      start: { x: start.rect.left + 4, y: start.rect.top + start.rect.height / 2 },
+      end: { x: Math.min(end.rect.right - 4, end.rect.left + 420), y: end.rect.top + end.rect.height / 2 },
+      release: { x: Math.min(frameRect.right - 40, end.rect.right + 120), y: end.rect.bottom + 28 }
+    };
+  });
+
+  await page.mouse.move(drag.start.x, drag.start.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.end.x, drag.end.y, { steps: 24 });
+  await page.mouse.move(drag.release.x, drag.release.y, { steps: 8 });
+  const beforeReleaseClip = await page.evaluate(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) throw new Error("Expected native selection before release");
+    const rects = [...selection.getRangeAt(0).getClientRects()].filter((item) => item.width > 20 && item.height > 5);
+    if (rects.length === 0) throw new Error("Expected visible selection rects before release");
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const right = Math.max(...rects.map((rect) => rect.right));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    return {
+      x: Math.max(0, Math.floor(left)),
+      y: Math.max(0, Math.floor(top)),
+      width: Math.max(1, Math.ceil(right - left)),
+      height: Math.max(1, Math.ceil(bottom - top))
+    };
+  });
+  const beforeReleasePixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: beforeReleaseClip }));
+  await page.mouse.up();
+
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/selected sentence|floatin|document text/);
+  await page.waitForTimeout(300);
+  const afterReleaseClip = await page.evaluate(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) throw new Error("Expected native selection after release");
+    const rects = [...selection.getRangeAt(0).getClientRects()].filter((item) => item.width > 20 && item.height > 5);
+    if (rects.length === 0) throw new Error("Expected visible selection rects after release");
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const right = Math.max(...rects.map((rect) => rect.right));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    return {
+      x: Math.max(0, Math.floor(left)),
+      y: Math.max(0, Math.floor(top)),
+      width: Math.max(1, Math.ceil(right - left)),
+      height: Math.max(1, Math.ceil(bottom - top))
+    };
+  });
+  const afterReleasePixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: afterReleaseClip }));
+  expect(beforeReleasePixels).toBeGreaterThan(50);
+  expect(afterReleasePixels).toBeGreaterThan(beforeReleasePixels * 0.7);
+});
+
+test("waits for the browser-finalized PDF selection before opening the menu", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-finalized-selection-${suffix}.pdf`);
+  await writeFile(
+    pdfPath,
+    makePdfLines([
+      "Seneca once remarked of Socrates that it was his death by hem-lock",
+      "that made him great. With reason Socrates death demonstrated",
+      "the steadfastness of his philosophical principles and his belief",
+      "up to the principles he preached."
+    ])
+  );
+  await importBackendPath(pdfPath);
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer")).toContainText("up to the principles");
+  await page.getByTestId("pdf-text-layer").evaluate((layer) => {
+    const spans = [...layer.querySelectorAll("span")].filter((span) => {
+      const rect = span.getBoundingClientRect();
+      return rect.width > 20 && rect.height > 5;
+    });
+    const first = spans.find((span) => span.textContent?.includes("Seneca once remarked"));
+    const partialEnd = spans.find((span) => span.textContent?.includes("the steadfastness"));
+    const finalEnd = spans.find((span) => span.textContent?.includes("up to the principles"));
+    if (!first?.firstChild || !partialEnd?.firstChild || !finalEnd?.firstChild) {
+      throw new Error("Expected visible PDF text spans");
+    }
+
+    const selection = window.getSelection();
+    const partial = document.createRange();
+    partial.setStart(first.firstChild, 0);
+    partial.setEnd(partialEnd.firstChild, partialEnd.textContent?.length ?? 0);
+    selection?.removeAllRanges();
+    selection?.addRange(partial);
+
+    const full = document.createRange();
+    full.setStart(first.firstChild, 0);
+    full.setEnd(finalEnd.firstChild, finalEnd.textContent?.length ?? 0);
+    document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    queueMicrotask(() => {
+      selection?.removeAllRanges();
+      selection?.addRange(full);
+    });
+  });
+
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/up to the principles/);
+});
+
+test("keeps the floating menu near short mid-page PDF selections", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-short-midpage-selection-menu-${suffix}.pdf`);
+  await writeFile(
+    pdfPath,
+    makePdfLines([
+      "Tacitus depiction line before the target",
+      "Seneca life was mired in political advancement",
+      "Another line keeps normal paragraph flow",
+      "More surrounding text below the short selected phrase"
+    ])
+  );
+  await importBackendPath(pdfPath);
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer")).toContainText("Seneca life");
+  await page.getByTestId("pdf-text-layer").evaluate((layer) => {
+    const span = [...layer.querySelectorAll("span")].find((item) => item.textContent?.includes("Seneca life"));
+    if (!span?.firstChild) throw new Error("Expected target PDF span");
+    const start = span.textContent?.indexOf("Seneca life") ?? -1;
+    if (start < 0) throw new Error("Expected target phrase");
+    const range = document.createRange();
+    range.setStart(span.firstChild, start);
+    range.setEnd(span.firstChild, start + "Seneca life".length);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  });
+
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/Seneca life/);
+  const geometry = await page.evaluate(() => {
+    const menu = document.querySelector<HTMLElement>("[data-testid='selection-menu']");
+    const preview = document.querySelector<HTMLElement>("[data-testid='selection-preview-text']");
+    const selection = window.getSelection();
+    if (!menu || !preview || !selection?.rangeCount) throw new Error("Expected menu, preview, and native selection");
+    const menuRect = menu.getBoundingClientRect();
+    const selectionRect = selection.getRangeAt(0).getBoundingClientRect();
+    const style = getComputedStyle(menu);
+    const overlaps =
+      menuRect.left < selectionRect.right &&
+      menuRect.right > selectionRect.left &&
+      menuRect.top < selectionRect.bottom &&
+      menuRect.bottom > selectionRect.top;
+    return {
+      overlaps,
+      distance: Math.min(Math.abs(menuRect.top - selectionRect.bottom), Math.abs(menuRect.bottom - selectionRect.top)),
+      topPadding: Number.parseFloat(style.paddingTop),
+      bottomPadding: Number.parseFloat(style.paddingBottom)
+    };
+  });
+  expect(geometry.overlaps).toBe(false);
+  expect(geometry.distance).toBeLessThan(120);
+  expect(geometry.topPadding).toBe(geometry.bottomPadding);
 });
 
 test("does not expand PDF selections into barely touched next words", async ({ page }, testInfo) => {
@@ -1001,7 +1651,7 @@ test("imports images, crops a region selection, and chats about it", async ({ pa
   await expect(page.getByTestId("selection-preview-text")).toHaveCount(0);
 
   await page.getByTestId("menu-define").click();
-  await expect(page.getByTestId("ai-result")).toContainText("selected page-image");
+  await expectAiResult(page.getByTestId("ai-result"), "selected page-image");
   await expect(page.getByTestId("region-layer").first().locator(".region-box")).toBeVisible();
   await expect(page.getByTestId("saved-region-highlight")).toHaveCount(0);
 
@@ -1012,7 +1662,7 @@ test("imports images, crops a region selection, and chats about it", async ({ pa
 
   await page.getByTestId("chat-input").fill("What should I notice in this panel?");
   await page.getByTestId("send-chat").click();
-  await expect(page.getByTestId("chat-messages")).toContainText("selected page-image");
+  await expectAiResult(page.getByTestId("chat-messages"), "selected page-image");
 });
 
 test("uses the source PDF as AI context for visual PDF regions", async ({}, testInfo) => {
@@ -1054,9 +1704,7 @@ test("uses the source PDF as AI context for visual PDF regions", async ({}, test
   const { chat: nextChat } = (await messageResponse.json()) as {
     chat: { messages: Array<{ role: string; content: string }> };
   };
-  expect(nextChat.messages.some((message) => message.role === "assistant" && message.content.includes("selected document-pdf"))).toBe(
-    true
-  );
+  await expectAssistantMessage(nextChat.messages, "selected document-pdf");
 });
 
 test("uses added visual selections as context for the next current-chat message", async ({}, testInfo) => {
@@ -1099,9 +1747,7 @@ test("uses added visual selections as context for the next current-chat message"
     chat: { selectionId: string | null; messages: Array<{ role: string; content: string }> };
   };
   expect(nextChat.selectionId).toBeNull();
-  expect(nextChat.messages.some((message) => message.role === "assistant" && message.content.includes("selected document-pdf"))).toBe(
-    true
-  );
+  await expectAssistantMessage(nextChat.messages, "selected document-pdf");
 });
 
 test("opens CBZ manga archives from the picker", async ({ page }, testInfo) => {

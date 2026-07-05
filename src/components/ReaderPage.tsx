@@ -8,6 +8,7 @@ export type PdfDocumentProxy = any;
 
 export interface RegionPayload {
   region: SelectionRegion;
+  imageData: string;
   menu: FloatingMenuPosition;
 }
 
@@ -177,10 +178,6 @@ function PdfPage(props: {
   createEffect(() => {
     const next = estimatedSize();
     if (!isNearViewport()) setSize(next);
-  });
-
-  createEffect(() => {
-    if (props.keepRendered && !isNearViewport()) setIsNearViewport(true);
   });
 
   createEffect(() => {
@@ -375,6 +372,12 @@ function RegionSelector(props: {
     const sy = currentRect.top * scaleY;
     const sw = currentRect.width * scaleX;
     const sh = currentRect.height * scaleY;
+    const crop = document.createElement("canvas");
+    crop.width = Math.max(1, Math.round(sw));
+    crop.height = Math.max(1, Math.round(sh));
+    const context = crop.getContext("2d");
+    if (!context) return;
+    context.drawImage(source, sx, sy, sw, sh, 0, 0, crop.width, crop.height);
 
     props.onRegion({
       region: {
@@ -384,6 +387,7 @@ function RegionSelector(props: {
         width: Math.round(sw),
         height: Math.round(sh)
       },
+      imageData: crop.toDataURL("image/png"),
       menu: menuPositionForRect(
         new DOMRect(box.left + currentRect.left, box.top + currentRect.top, currentRect.width, currentRect.height)
       )

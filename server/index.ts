@@ -93,6 +93,7 @@ const transientSelectionFrom = (context: {
   pageId?: string | null;
   kind: "text" | "image";
   text?: string;
+  imageData?: string | null;
   region?: SelectionRecord["region"];
 }): SelectionRecord => ({
   id: "",
@@ -100,7 +101,7 @@ const transientSelectionFrom = (context: {
   pageId: context.pageId ?? null,
   kind: context.kind,
   text: context.text ?? "",
-  imageData: null,
+  imageData: context.imageData ?? null,
   region: context.region ?? null,
   language: null,
   tags: [],
@@ -327,6 +328,7 @@ const route = async (request: Request) => {
         pageId?: string | null;
         kind: "text" | "image";
         text?: string;
+        imageData?: string | null;
         region?: SelectionRecord["region"];
       }>;
     }>(request);
@@ -362,6 +364,7 @@ const route = async (request: Request) => {
         pageId?: string | null;
         kind: "text" | "image";
         text?: string;
+        imageData?: string | null;
         region?: SelectionRecord["region"];
       } | null;
       sourceLanguage?: string | null;
@@ -392,6 +395,7 @@ const route = async (request: Request) => {
         pageId?: string | null;
         kind: "text" | "image";
         text?: string;
+        imageData?: string | null;
         region?: SelectionRecord["region"];
       } | null;
       sourceLanguage?: string | null;

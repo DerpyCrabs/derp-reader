@@ -9,7 +9,7 @@ import { LibraryPanel } from "./components/LibraryPanel";
 import type { PdfDocumentProxy, RegionPayload } from "./components/ReaderPage";
 import { ReaderTopBar } from "./components/ReaderTopBar";
 import { ReaderViewport } from "./components/ReaderViewport";
-import { SelectionMenu, type FloatingMenu } from "./components/SelectionMenu";
+import { SelectionOverlay } from "./components/SelectionOverlay";
 import { filesFromDrop, fileToDataUrl, isPickedImage } from "./fileImport";
 import type { FitMode } from "./readerPreferences";
 import { menuPositionForRect, visibleRectForRange } from "./readerGeometry";
@@ -35,7 +35,7 @@ const contextAsHighlight = (documentId: string, context: DraftSelection | ChatCo
   pageId: context.pageId,
   kind: context.kind,
   text: context.text,
-  imageData: null,
+  imageData: context.imageData ?? null,
   region: context.region,
   language: null,
   tags: [],
@@ -83,7 +83,6 @@ export default function App() {
     const draft = reader.draftSelection;
     if (draft) {
       setReader("draftSelection", { ...draft, text });
-      setUi("aiResult", null);
       return;
     }
     setReader("currentSelection", (selection) => (selection ? { ...selection, text } : selection));
@@ -109,6 +108,7 @@ export default function App() {
         pageId: selection.pageId,
         kind: selection.kind,
         text: selection.text,
+        imageData: selection.imageData,
         region: selection.region
       };
     }
@@ -300,7 +300,6 @@ export default function App() {
       setReader("activeDoc", document);
       setReader("pdfDoc", restoredPdf);
       setReader("draftSelection", null);
-      setUi("aiResult", null);
       setReader("currentPage", Math.min(position?.pageIndex ?? 0, Math.max(document.pages.length - 1, 0)));
       setReader("zoom", position?.zoom ?? 1);
       setLayout("viewMode", position?.viewMode ?? layout.viewMode);
@@ -408,12 +407,17 @@ export default function App() {
     const closeFromPointer = (event: PointerEvent) => {
       const target = event.target as Element | null;
       if (target?.closest(".selection-menu")) return;
-      if (target?.closest(".insight-panel")) {
+      if (target && readerRef?.contains(target)) {
+        setReader("draftSelection", null);
         setUi("floatingMenu", null);
-        setUi("aiResult", null);
         return;
       }
-      clearContextSelection();
+      if (target?.closest(".insight-panel")) {
+        setUi("floatingMenu", null);
+        return;
+      }
+      setReader("draftSelection", null);
+      setUi("floatingMenu", null);
     };
 
     document.addEventListener("pointerdown", closeFromPointer);
@@ -422,10 +426,32 @@ export default function App() {
     });
   });
 
+  let textSelectionCaptureFrame = 0;
+
   createEffect(() => {
-    const captureFromPointer = () => captureTextSelection();
+    const captureFromPointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest(".selection-menu")) return;
+      const readerBounds = readerRef?.getBoundingClientRect();
+      const pointer =
+        readerBounds &&
+        event.clientX >= readerBounds.left &&
+        event.clientX <= readerBounds.right &&
+        event.clientY >= readerBounds.top &&
+        event.clientY <= readerBounds.bottom
+          ? { x: event.clientX, y: event.clientY }
+          : null;
+      window.cancelAnimationFrame(textSelectionCaptureFrame);
+      textSelectionCaptureFrame = window.requestAnimationFrame(() => {
+        textSelectionCaptureFrame = 0;
+        captureTextSelection(pointer);
+      });
+    };
     document.addEventListener("pointerup", captureFromPointer);
-    onCleanup(() => document.removeEventListener("pointerup", captureFromPointer));
+    onCleanup(() => {
+      window.cancelAnimationFrame(textSelectionCaptureFrame);
+      document.removeEventListener("pointerup", captureFromPointer);
+    });
   });
 
   createEffect(() => {
@@ -565,7 +591,7 @@ export default function App() {
     folderInputRef.click();
   };
 
-  function captureTextSelection() {
+  function captureTextSelection(pointer: { x: number; y: number } | null = null) {
     if (layout.selectionMode !== "text") return;
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !selection.toString().trim()) return;
@@ -583,7 +609,7 @@ export default function App() {
     const isPdfTextLayer = Boolean(pageElement.querySelector(".textLayer"));
     const nativeRange = selection.getRangeAt(0);
     const range = isPdfTextLayer ? nativeRange : rangeExpandedToWords(nativeRange);
-    const menuRect = visibleRectForRange(range, selection.focusNode, selection.focusOffset);
+    const menuRect = visibleRectForRange(range, selection.focusNode, selection.focusOffset, pointer);
     if (!menuRect) return;
     if (!range.collapsed && !isPdfTextLayer) {
       selection.removeAllRanges();
@@ -611,16 +637,12 @@ export default function App() {
           };
     const text = selection.toString().replace(/\s+/g, " ").trim();
     if (!text) return;
-    const previousDraft = reader.draftSelection;
-    const selectionChanged = previousDraft?.text !== text || previousDraft?.pageId !== pageId;
-
     setReader("draftSelection", {
       kind: "text",
       text,
       pageId,
       region
     });
-    if (selectionChanged) setUi("aiResult", null);
     setUi("floatingMenu", {
       kind: "text",
       ...menuPositionForRect(menuRect)
@@ -630,7 +652,6 @@ export default function App() {
   const clearContextSelection = () => {
     setReader("draftSelection", null);
     setUi("floatingMenu", null);
-    setUi("aiResult", null);
     window.getSelection()?.removeAllRanges();
   };
 
@@ -695,6 +716,7 @@ export default function App() {
           pageId: draft.pageId,
           kind: draft.kind,
           text: draft.text,
+          imageData: draft.imageData ?? null,
           region: draft.region,
           tags: draft.kind === "image" ? ["image", "region"] : ["text"]
         });
@@ -719,14 +741,11 @@ export default function App() {
     setReader("draftSelection", {
       kind: "image",
       text: "",
+      imageData: payload.imageData,
       pageId: page.id,
       region: payload.region
     });
-    setUi("aiResult", null);
-    setUi("floatingMenu", {
-      kind: "image",
-      ...payload.menu
-    });
+    setUi("floatingMenu", { kind: "image", ...payload.menu });
   };
 
   const findSelectionById = async (selectionId: string) => {
@@ -740,7 +759,6 @@ export default function App() {
   const selectSavedSelection = async (selection: SelectionRecord) => {
     setReader("currentSelection", selection);
     setReader("draftSelection", null);
-    setUi("aiResult", null);
     const pageIndex =
       selection.region?.pageIndex ??
       reader.activeDoc?.pages.findIndex((page) => page.id === selection.pageId) ??
@@ -790,7 +808,6 @@ export default function App() {
         -1;
       setReader("currentSelection", linkedSelection);
       setReader("draftSelection", null);
-      setUi("aiResult", null);
       if (pageIndex >= 0) goToPage(pageIndex);
     } else {
       setReader("currentSelection", null);
@@ -803,7 +820,6 @@ export default function App() {
   const useDocumentNote = () => {
     setReader("currentSelection", null);
     setReader("draftSelection", null);
-    setUi("aiResult", null);
   };
 
   const deleteSavedSelection = async (selection: SelectionRecord) => {
@@ -814,7 +830,6 @@ export default function App() {
     if (reader.currentSelection?.id === selection.id) {
       setReader("currentSelection", null);
       setReader("draftSelection", null);
-      setUi("aiResult", null);
     }
     if (reader.activeChat?.selectionId === selection.id) {
       setReader("activeChat", (chat) => {
@@ -829,79 +844,6 @@ export default function App() {
     await api.deleteChat(chatId);
     setReader("chats", (items) => items.filter((item) => item.id !== chatId));
     if (reader.activeChat?.id === chatId) setReader("activeChat", null);
-  };
-
-  const runTranslate = async () => {
-    setUi("busy", "Translating");
-    setUi("error", "");
-    setUi("aiResult", null);
-    try {
-      const selection = reader.currentSelection;
-      const draftContext = reader.activeDoc && reader.draftSelection
-        ? {
-            documentId: reader.activeDoc.id,
-            pageId: reader.draftSelection.pageId,
-            kind: reader.draftSelection.kind,
-            text: reader.draftSelection.text,
-            region: reader.draftSelection.region
-          }
-        : null;
-      if (draftContext?.kind === "text" && !draftContext.text.trim()) return;
-      const text = draftContext?.kind === "text" ? draftContext.text : selection ? "" : activeSelectionText() || window.getSelection()?.toString().trim() || "";
-      if (!text && !selection && !draftContext) return;
-      setUi(
-        "aiResult",
-        (
-          await api.translate({
-            text: selection ? undefined : text,
-            selectionId: selection?.id,
-            selectionContext: draftContext,
-            sourceLanguage: reader.activeDoc?.language,
-            targetLanguage: "English"
-          })
-        ).result
-      );
-    } catch (translateError) {
-      setUi("error", translateError instanceof Error ? translateError.message : "Translation failed");
-    } finally {
-      setUi("busy", "");
-    }
-  };
-
-  const runDefine = async () => {
-    setUi("busy", "Defining");
-    setUi("error", "");
-    setUi("aiResult", null);
-    try {
-      const selection = reader.currentSelection;
-      const draftContext = reader.activeDoc && reader.draftSelection
-        ? {
-            documentId: reader.activeDoc.id,
-            pageId: reader.draftSelection.pageId,
-            kind: reader.draftSelection.kind,
-            text: reader.draftSelection.text,
-            region: reader.draftSelection.region
-          }
-        : null;
-      if (draftContext?.kind === "text" && !draftContext.text.trim()) return;
-      const text = draftContext?.kind === "text" ? draftContext.text : selection ? "" : activeSelectionText() || window.getSelection()?.toString().trim() || "";
-      if (!text && !selection && !draftContext) return;
-      setUi(
-        "aiResult",
-        (
-          await api.define({
-            text: selection ? undefined : text,
-            selectionId: selection?.id,
-            selectionContext: draftContext,
-            sourceLanguage: reader.activeDoc?.language
-          })
-        ).result
-      );
-    } catch (defineError) {
-      setUi("error", defineError instanceof Error ? defineError.message : "Definition failed");
-    } finally {
-      setUi("busy", "");
-    }
   };
 
   const commitDraftForSidePanel = async () => {
@@ -1004,6 +946,7 @@ export default function App() {
         pageId: context.pageId,
         kind: context.kind,
         text: context.text,
+        imageData: context.imageData ?? null,
         region: context.region
       }));
       const { chat: nextChat } = await api.sendMessage(chat.id, message, reader.currentSelection?.id, contexts);
@@ -1142,7 +1085,6 @@ export default function App() {
         <Show when={layout.showLibrary}>
           <LibraryPanel
             documents={reader.documents}
-            locations={reader.locations}
             searchQuery={searchQuery()}
             searchResults={reader.searchResults}
             activeDocument={reader.activeDoc}
@@ -1187,7 +1129,6 @@ export default function App() {
             }}
             onDragLeave={() => setUi("dropActive", false)}
             onDrop={(event) => void handleDrop(event)}
-            onPointerUp={captureTextSelection}
             onScroll={(nextScroll) => {
               setReader("scrollY", nextScroll);
               syncFloatingMenuWithReader();
@@ -1230,23 +1171,19 @@ export default function App() {
             onSendChat={() => void sendChat()}
           />
         </Show>
-        <Show when={activeFloatingMenu()}>
-          {(menu) => (
-            <SelectionMenu
-              menu={menu()}
-              busy={ui.busy}
-              result={ui.aiResult}
-              selectionText={activeSelectionText()}
-              canAddToCurrentChat={Boolean(reader.activeChat)}
-              onSelectionTextChange={updateFloatingSelectionText}
-              onTranslate={() => void runTranslate()}
-              onDefine={() => void runDefine()}
-              onNote={() => void createNoteFromSelection()}
-              onNewChat={() => void startNewChatFromSelection()}
-              onAddToCurrentChat={() => void addSelectionToCurrentChat()}
-            />
-          )}
-        </Show>
+        <SelectionOverlay
+          menu={activeFloatingMenu()}
+          activeDocument={reader.activeDoc}
+          draftSelection={reader.draftSelection}
+          currentSelection={reader.currentSelection}
+          selectionText={activeSelectionText()}
+          canAddToCurrentChat={Boolean(reader.activeChat)}
+          onSelectionTextChange={updateFloatingSelectionText}
+          onNote={() => void createNoteFromSelection()}
+          onNewChat={() => void startNewChatFromSelection()}
+          onAddToCurrentChat={() => void addSelectionToCurrentChat()}
+          onError={(message) => setUi("error", message)}
+        />
       </div>
     </div>
   );
