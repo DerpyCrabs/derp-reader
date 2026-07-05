@@ -1,10 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 process.env.PW_TEST_PORT_OFFSET ??= String(Math.floor(Math.random() * 400));
 const testRunOffset = Number(process.env.PW_TEST_PORT_OFFSET);
 const testWebPort = Number(process.env.PW_WEB_PORT ?? 5174 + testRunOffset);
 const testWebBase = `http://127.0.0.1:${testWebPort}`;
-const testDatabasePath = process.env.PW_DATABASE_PATH ?? `data/e2e-${process.pid}-${testRunOffset}.sqlite`;
+const testDatabasePath =
+  process.env.PW_DATABASE_PATH ?? join(tmpdir(), "derp-reader-tests", `e2e-${process.pid}-${testRunOffset}.sqlite`);
 const aiMock = process.env.AI_TEST_MOCK === "1";
 
 process.env.TEST_API_BASE ??= testWebBase;

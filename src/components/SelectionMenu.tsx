@@ -1,4 +1,4 @@
-import { Show } from "solid-js";
+import { Show, createEffect } from "solid-js";
 import Languages from "lucide-solid/icons/languages";
 import MessageCircle from "lucide-solid/icons/message-circle";
 import Pencil from "lucide-solid/icons/pencil";
@@ -29,6 +29,7 @@ interface SelectionMenuProps {
 }
 
 export function SelectionMenu(props: SelectionMenuProps) {
+  let previewRef!: HTMLDivElement;
   const isTranslateBusy = () => props.busy && props.activeTask === "translate";
   const isDefineBusy = () => props.busy && props.activeTask === "define";
   const shouldRegenerate = (task: "translate" | "define") => props.result && props.activeTask === task;
@@ -68,6 +69,13 @@ export function SelectionMenu(props: SelectionMenuProps) {
     event.preventDefault();
     event.stopPropagation();
   };
+
+  createEffect(() => {
+    const text = props.selectionText;
+    if (!previewRef || document.activeElement === previewRef || previewRef.textContent === text) return;
+    previewRef.textContent = text;
+  });
+
   return (
     <div
       class="selection-menu"
@@ -129,13 +137,16 @@ export function SelectionMenu(props: SelectionMenuProps) {
         </Show>
       </div>
       <Show when={props.selectionText.trim()}>
-        <textarea
+        <div
+          ref={previewRef}
           class="selection-preview-text"
           data-testid="selection-preview-text"
+          role="textbox"
+          aria-multiline="true"
+          contentEditable
           spellcheck={false}
-          rows={previewRows()}
-          value={props.selectionText}
-          onInput={(event) => props.onSelectionTextChange(event.currentTarget.value)}
+          style={{ "--selection-preview-rows": previewRows() }}
+          onInput={(event) => props.onSelectionTextChange(event.currentTarget.textContent ?? "")}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
         />

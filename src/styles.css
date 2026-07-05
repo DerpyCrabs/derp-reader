@@ -922,6 +922,7 @@ div.list-row:hover {
   min-width: 100%;
   max-width: 100%;
   max-height: 176px;
+  min-height: calc((var(--selection-preview-rows, 1) * 1.35em) + 14px);
   margin: 0;
   padding: 7px 8px;
   border: 1px solid #d4d9d6;
@@ -934,7 +935,6 @@ div.list-row:hover {
   white-space: pre-wrap;
   overflow: auto;
   overflow-wrap: anywhere;
-  resize: none;
   outline: none;
   scrollbar-color: #9a9a9a #eeeeee;
   scrollbar-width: thin;

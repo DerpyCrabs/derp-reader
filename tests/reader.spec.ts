@@ -477,7 +477,7 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   });
   expect(menuGeometry.overlaps).toBe(false);
   expect(menuGeometry.rows).toBe(1);
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/Le petit prince/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/Le petit prince/);
   await expect(page.getByTitle("Close selection menu")).toHaveCount(0);
 
   await page.mouse.click(12, 120);
@@ -656,7 +656,7 @@ test("ignores stale selection AI work after the selection changes", async ({ pag
   await expect(page.getByTestId("selection-loading")).toBeVisible();
 
   await selectTextIn(page, "page-text", "la fleur");
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/la fleur\.?/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/la fleur\.?/);
   await expect(page.getByTestId("selection-loading")).toHaveCount(0);
   await expect(page.getByTestId("ai-result")).toHaveCount(0);
   await page.waitForTimeout(350);
@@ -851,7 +851,7 @@ test("imports a PDF and exposes a selectable PDF.js text layer", async ({ page }
   await page.getByTestId("pdf-text-layer").selectText();
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(new RegExp(pdfText));
+  await expect(page.getByTestId("selection-preview-text")).toContainText(new RegExp(pdfText));
   await expect(
     page.getByTestId("pdf-text-layer").evaluate((layer) => getComputedStyle(layer.querySelector("span")!, "::selection").backgroundColor)
   ).resolves.not.toBe("rgba(0, 0, 0, 0)");
@@ -871,7 +871,7 @@ test("imports a PDF and exposes a selectable PDF.js text layer", async ({ page }
     selection?.addRange(range);
   });
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue("tablet");
+  await expect(page.getByTestId("selection-preview-text")).toContainText("tablet");
 
   await page.mouse.click(12, 120);
   await expect(page.getByTestId("selection-menu")).toHaveCount(0);
@@ -889,13 +889,13 @@ test("imports a PDF and exposes a selectable PDF.js text layer", async ({ page }
     selection?.addRange(range);
   });
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue("Seneca once remarked of");
+  await expect(page.getByTestId("selection-preview-text")).toContainText("Seneca once remarked of");
 
   await page.mouse.click(12, 120);
   await expect(page.getByTestId("selection-menu")).toHaveCount(0);
   await page.getByTestId("pdf-text-layer").selectText();
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(new RegExp(pdfText));
+  await expect(page.getByTestId("selection-preview-text")).toContainText(new RegExp(pdfText));
 
   await page.getByTestId("menu-note").click();
   await expect(page.getByTestId("selection-menu")).toHaveCount(0);
@@ -934,7 +934,7 @@ test("keeps PDF selection editable across text-layer spans without rewriting it"
   });
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
 
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/Alpha beta.*Gamma delta/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/Alpha beta.*Gamma delta/);
   await page.getByTestId("selection-preview-text").fill("Corrected alpha beta");
   await page.getByTestId("menu-note").click();
   await page.getByTestId("note-editor").fill("Corrected alpha beta note");
@@ -979,7 +979,7 @@ test("keeps the selected PDF page mounted while the selection menu is open", asy
     (window as Window & { selectedPdfLayer?: HTMLElement }).selectedPdfLayer = layer;
   });
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue("selected phrase 1");
+  await expect(page.getByTestId("selection-preview-text")).toContainText("selected phrase 1");
   await expect(
     page.evaluate(() => ({
       layerConnected: Boolean((window as Window & { selectedPdfLayer?: HTMLElement }).selectedPdfLayer?.isConnected),
@@ -1057,7 +1057,7 @@ test("opens the floating menu for PDF selections spanning pages without scrollin
   await page.mouse.up();
 
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/start selection.*Cross page end selection/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/start selection.*Cross page end selection/);
   const geometry = await page.evaluate(() => {
     const menu = document.querySelector<HTMLElement>("[data-testid='selection-menu']");
     const reader = document.querySelector<HTMLElement>("[data-testid='reader-viewport']");
@@ -1192,7 +1192,7 @@ test("keeps the final PDF line after the floating menu opens from a real drag", 
   await page.mouse.up();
 
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/up to the principles/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/up to the principles/);
   await expect
     .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
     .toContain("up to the principles");
@@ -1419,7 +1419,7 @@ test("keeps native PDF highlight when pointerup lands outside the reader text", 
   await page.mouse.up();
 
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/selected sentence|floatin|document text/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/selected sentence|floatin|document text/);
   await page.waitForTimeout(300);
   const afterReleaseClip = await page.evaluate(() => {
     const selection = window.getSelection();
@@ -1438,6 +1438,79 @@ test("keeps native PDF highlight when pointerup lands outside the reader text", 
     };
   });
   const afterReleasePixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: afterReleaseClip }));
+  expect(beforeReleasePixels).toBeGreaterThan(50);
+  expect(afterReleasePixels).toBeGreaterThan(beforeReleasePixels * 0.7);
+});
+
+test("keeps one-line PDF highlight when pointerup lands in blank page space", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-one-line-pointerup-blank-space-${suffix}.pdf`);
+  const selectedLine = "One selected PDF line keeps highlight";
+  await writeFile(pdfPath, makePdfLines([selectedLine]));
+  await importBackendPath(pdfPath);
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer")).toContainText(selectedLine);
+  const drag = await page.evaluate((line) => {
+    const span = [...document.querySelectorAll<HTMLSpanElement>("[data-testid='pdf-text-layer'] span")]
+      .find((item) => item.textContent?.includes(line));
+    const pageFrame = span?.closest<HTMLElement>("[data-page-index]");
+    const pageContent = span?.closest<HTMLElement>(".pdf-page");
+    if (!span || !pageFrame || !pageContent) throw new Error("Expected visible one-line PDF text");
+    const textRect = span.getBoundingClientRect();
+    const pageRect = pageContent.getBoundingClientRect();
+    return {
+      start: { x: textRect.left + 4, y: textRect.top + textRect.height / 2 },
+      end: { x: textRect.right - 4, y: textRect.top + textRect.height / 2 },
+      release: {
+        x: Math.min(pageRect.right - 80, textRect.left + 180),
+        y: Math.min(pageRect.bottom - 80, textRect.bottom + 160)
+      },
+      clip: {
+        x: Math.max(0, Math.floor(textRect.left)),
+        y: Math.max(0, Math.floor(textRect.top)),
+        width: Math.max(1, Math.ceil(textRect.width)),
+        height: Math.max(1, Math.ceil(textRect.height))
+      }
+    };
+  }, selectedLine);
+
+  await page.mouse.move(drag.start.x, drag.start.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.end.x, drag.end.y, { steps: 18 });
+  await page.mouse.move(drag.release.x, drag.release.y, { steps: 8 });
+  const beforeRelease = await page.evaluate(() => {
+    const selection = window.getSelection();
+    return {
+      text: selection?.toString() ?? "",
+      collapsed: selection?.isCollapsed ?? true,
+      rangeCount: selection?.rangeCount ?? 0
+    };
+  });
+  expect(beforeRelease.text).toContain(selectedLine);
+  expect(beforeRelease.collapsed).toBe(false);
+  expect(beforeRelease.rangeCount).toBeGreaterThan(0);
+  const beforeReleasePixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: drag.clip }));
+
+  await page.mouse.up();
+
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  await expect(page.getByTestId("selection-preview-text")).toContainText(selectedLine);
+  const afterReleaseState = await page.evaluate(() => {
+    const selection = window.getSelection();
+    const active = document.activeElement;
+    return {
+      selectionText: selection?.toString() ?? "",
+      collapsed: selection?.isCollapsed ?? true,
+      rangeCount: selection?.rangeCount ?? 0,
+      activeTag: active?.tagName ?? "",
+      activeTestId: active instanceof HTMLElement ? active.dataset.testid ?? "" : "",
+      activeClass: active instanceof HTMLElement ? String(active.className) : ""
+    };
+  });
+  expect(afterReleaseState.selectionText).toContain(selectedLine);
+  expect(afterReleaseState.collapsed).toBe(false);
+  const afterReleasePixels = countVisibleNativeSelectionPixels(await page.screenshot({ clip: drag.clip }));
   expect(beforeReleasePixels).toBeGreaterThan(50);
   expect(afterReleasePixels).toBeGreaterThan(beforeReleasePixels * 0.7);
 });
@@ -1488,7 +1561,7 @@ test("waits for the browser-finalized PDF selection before opening the menu", as
   });
 
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/up to the principles/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/up to the principles/);
 });
 
 test("keeps the floating menu near short mid-page PDF selections", async ({ page }, testInfo) => {
@@ -1522,7 +1595,7 @@ test("keeps the floating menu near short mid-page PDF selections", async ({ page
   });
 
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/Seneca life/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/Seneca life/);
   const geometry = await page.evaluate(() => {
     const menu = document.querySelector<HTMLElement>("[data-testid='selection-menu']");
     const preview = document.querySelector<HTMLElement>("[data-testid='selection-preview-text']");
@@ -1569,8 +1642,8 @@ test("does not expand PDF selections into barely touched next words", async ({ p
   });
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
 
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue("A conversation a");
-  await expect(page.getByTestId("selection-preview-text")).not.toHaveValue(/about/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText("A conversation a");
+  await expect(page.getByTestId("selection-preview-text")).not.toContainText(/about/);
 });
 
 test("does not pull extra PDF lines when selection ends in a line gap", async ({ page }, testInfo) => {
@@ -1594,8 +1667,8 @@ test("does not pull extra PDF lines when selection ends in a line gap", async ({
   });
   await page.getByTestId("reader-viewport").dispatchEvent("pointerup");
 
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/Alpha beta gamma/);
-  await expect(page.getByTestId("selection-preview-text")).not.toHaveValue(/Delta/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/Alpha beta gamma/);
+  await expect(page.getByTestId("selection-preview-text")).not.toContainText(/Delta/);
 });
 
 test("PDF image selection mode removes the text layer and selects visual regions", async ({ page }, testInfo) => {
@@ -2116,7 +2189,7 @@ test("keeps floating text selection context when scrolling clears the native ran
 
   await selectTextIn(page, "page-text", "Le petit prince");
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue("Le petit prince");
+  await expect(page.getByTestId("selection-preview-text")).toContainText("Le petit prince");
 
   await page.evaluate(() => window.getSelection()?.removeAllRanges());
   await page.getByTestId("reader-viewport").evaluate((viewport) => {
@@ -2125,7 +2198,7 @@ test("keeps floating text selection context when scrolling clears the native ran
   });
 
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue("Le petit prince");
+  await expect(page.getByTestId("selection-preview-text")).toContainText("Le petit prince");
   await expect(page.getByTestId("selection-menu")).toBeVisible();
 });
 
@@ -2148,7 +2221,7 @@ test("opening the floating selection menu does not scroll the reader", async ({ 
   const beforeScroll = await page.getByTestId("reader-viewport").evaluate((viewport) => viewport.scrollTop);
   await selectVisibleText(page, "anchor text");
   await expect(page.getByTestId("selection-menu")).toBeVisible();
-  await expect(page.getByTestId("selection-preview-text")).toHaveValue(/anchor text/);
+  await expect(page.getByTestId("selection-preview-text")).toContainText(/anchor text/);
   await expect.poll(async () => page.getByTestId("reader-viewport").evaluate((viewport) => viewport.scrollTop)).toBe(beforeScroll);
 });
 
