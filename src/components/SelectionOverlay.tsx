@@ -1,9 +1,9 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
-import { useQueryClient } from "@tanstack/solid-query";
+import { queryOptions, useQueryClient } from "@tanstack/solid-query";
 import { api } from "../api";
 import type { ChatSelectionContext } from "../../shared/types";
 import type { DraftSelection } from "../stores/readerStore";
-import type { DocumentWithPages, SelectionRecord } from "../../shared/types";
+import type { AiResponse, DocumentWithPages, SelectionRecord } from "../../shared/types";
 import { SelectionMenu, type FloatingMenu } from "./SelectionMenu";
 
 type SelectionAiTask = "translate" | "define";
@@ -27,7 +27,7 @@ export function SelectionOverlay(props: SelectionOverlayProps) {
   const queryClient = useQueryClient();
   const [busy, setBusy] = createSignal("");
   const [activeTask, setActiveTask] = createSignal<SelectionAiTask | null>(null);
-  const [result, setResult] = createSignal(null as Awaited<ReturnType<typeof fetchSelectionAi>> | null);
+  const [result, setResult] = createSignal<AiResponse | null>(null);
 
   const selectionInput = (task: SelectionAiTask) => {
     const draftContext: ChatSelectionContext | null = props.activeDocument && props.draftSelection
@@ -53,6 +53,7 @@ export function SelectionOverlay(props: SelectionOverlayProps) {
         selectionId: selection?.id ?? null,
         documentId: props.activeDocument?.id ?? null,
         pageId: draftContext?.pageId ?? selection?.pageId ?? null,
+        sourceLanguage: props.activeDocument?.language ?? null,
         kind: draftContext?.kind ?? selection?.kind ?? "text",
         text: draftContext?.text ?? selection?.text ?? text,
         imageData: draftContext?.imageData ?? selection?.imageData ?? null,
@@ -60,38 +61,10 @@ export function SelectionOverlay(props: SelectionOverlayProps) {
       }),
       text,
       selection,
-      draftContext
+      draftContext,
+      sourceLanguage: props.activeDocument?.language ?? null
     };
   };
-
-  async function fetchSelectionAi(input: NonNullable<ReturnType<typeof selectionInput>>, signal: AbortSignal) {
-    if (input.task === "translate") {
-      return (
-        await api.translate(
-          {
-            text: input.selection ? undefined : input.text,
-            selectionId: input.selection?.id,
-            selectionContext: input.draftContext,
-            sourceLanguage: props.activeDocument?.language,
-            targetLanguage: "English"
-          },
-          { signal }
-        )
-      ).result;
-    }
-
-    return (
-      await api.define(
-        {
-          text: input.selection ? undefined : input.text,
-          selectionId: input.selection?.id,
-          selectionContext: input.draftContext,
-          sourceLanguage: props.activeDocument?.language
-        },
-        { signal }
-      )
-    ).result;
-  }
 
   const activeSelectionKey = createMemo(() => {
     const draft = props.draftSelection;
@@ -126,25 +99,52 @@ export function SelectionOverlay(props: SelectionOverlayProps) {
     setActiveTask(task);
     if (!options.regenerate) setResult(null);
 
-    const queryKey = ["selection-ai", input.key] as const;
-    const cached = options.regenerate ? null : queryClient.getQueryData<NonNullable<ReturnType<typeof result>>>(queryKey);
+    const selectionAiQuery = queryOptions({
+      queryKey: ["selection-ai", input.key] as const,
+      queryFn: async ({ signal }) => {
+        if (input.task === "translate") {
+          return (
+            await api.translate(
+              {
+                text: input.selection ? undefined : input.text,
+                selectionId: input.selection?.id,
+                selectionContext: input.draftContext,
+                sourceLanguage: input.sourceLanguage,
+                targetLanguage: "English"
+              },
+              { signal }
+            )
+          ).result;
+        }
+
+        return (
+          await api.define(
+            {
+              text: input.selection ? undefined : input.text,
+              selectionId: input.selection?.id,
+              selectionContext: input.draftContext,
+              sourceLanguage: input.sourceLanguage
+            },
+            { signal }
+          )
+        ).result;
+      },
+      staleTime: Infinity,
+      gcTime: 1000 * 60 * 60
+    });
+    const cached = options.regenerate ? null : queryClient.getQueryData<NonNullable<ReturnType<typeof result>>>(selectionAiQuery.queryKey);
     if (cached) {
       setResult(cached);
       return;
     }
 
-    if (options.regenerate) await queryClient.invalidateQueries({ queryKey });
+    if (options.regenerate) await queryClient.invalidateQueries({ queryKey: selectionAiQuery.queryKey });
     const version = ++requestVersion;
     setBusy(task === "translate" ? "Translating" : "Defining");
     props.onError("");
 
     try {
-      const nextResult = await queryClient.fetchQuery({
-        queryKey,
-        queryFn: ({ signal }) => fetchSelectionAi(input, signal),
-        staleTime: Infinity,
-        gcTime: 1000 * 60 * 60
-      });
+      const nextResult = await queryClient.fetchQuery(selectionAiQuery);
       if (requestVersion === version && selectionInput(task)?.key === input.key) {
         setResult(nextResult);
       }

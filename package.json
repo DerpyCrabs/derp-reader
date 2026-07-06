@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "bun --watch scripts/dev.ts",
     "start": "bun server/index.ts",
-    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsgo --noEmit",
+    "lint": "oxlint --quiet --tsconfig tsconfig.json .",
+    "check": "bun run typecheck && bun run lint",
+    "build": "bun run typecheck && vite build",
     "test": "AI_TEST_MOCK=1 playwright test",
     "test:fast": "AI_TEST_MOCK=1 playwright test --project=chromium",
     "test:tablet": "AI_TEST_MOCK=1 playwright test --project=android-tablet",
@@ -31,7 +34,11 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
+    "@tanstack/eslint-plugin-query": "^5.101.2",
     "@types/bun": "^1.3.14",
+    "@typescript/native-preview": "^7.0.0-dev.20260706.1",
+    "eslint-plugin-solid": "^0.14.5",
+    "oxlint": "^1.72.0",
     "typescript": "^6.0.3",
     "vite": "^8.1.3",
     "vite-plugin-solid": "^2.11.12"

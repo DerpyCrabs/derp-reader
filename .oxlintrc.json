@@ -1,0 +1,53 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": [
+    {
+      "name": "solid",
+      "specifier": "eslint-plugin-solid"
+    },
+    {
+      "name": "@tanstack/query",
+      "specifier": "@tanstack/eslint-plugin-query"
+    }
+  ],
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "globals": {
+    "Bun": "readonly"
+  },
+  "rules": {
+    "solid/components-return-once": "error",
+    "solid/event-handlers": "error",
+    "solid/imports": "error",
+    "solid/jsx-no-duplicate-props": "error",
+    "solid/jsx-no-undef": "error",
+    "solid/no-destructure": "warn",
+    "solid/no-innerhtml": "warn",
+    "solid/no-react-deps": "error",
+    "solid/no-react-specific-props": "error",
+    "solid/no-unknown-namespaces": "error",
+    "solid/prefer-classlist": "warn",
+    "solid/prefer-for": "warn",
+    "solid/prefer-show": "warn",
+    "solid/reactivity": "warn",
+    "solid/style-prop": "error",
+    "@tanstack/query/exhaustive-deps": "error",
+    "@tanstack/query/stable-query-client": "error",
+    "@tanstack/query/no-rest-destructuring": "warn",
+    "@tanstack/query/no-unstable-deps": "error",
+    "@tanstack/query/infinite-query-property-order": "error",
+    "@tanstack/query/no-void-query-fn": "error",
+    "@tanstack/query/mutation-property-order": "error",
+    "@tanstack/query/prefer-query-options": "warn"
+  },
+  "overrides": [
+    {
+      "files": ["tests/**/*.ts"],
+      "rules": {
+        "solid/reactivity": "off"
+      }
+    }
+  ]
+}
