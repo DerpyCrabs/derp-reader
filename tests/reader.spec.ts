@@ -521,7 +521,7 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await page.getByTestId("chat-input").fill("What is the whole letter about?");
   await page.getByTestId("send-chat").click();
   await expect(page.getByTestId("chat-messages")).toContainText("What is the whole letter about?");
-  await expect(page.getByRole("button", { name: "Document discussion" })).toBeVisible();
+  await expect(page.getByTestId("chat-chip").filter({ hasText: "What is the whole letter about?" })).toBeVisible();
 
   await openAssistant(page);
   await page.getByTestId("note-row").filter({ hasText: "Selection note" }).click();
@@ -532,7 +532,11 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await page.getByTestId("chat-input").fill("Explain the tone.");
   await page.getByTestId("send-chat").click();
   await expectAiResult(page.getByTestId("chat-messages"), "Test assistant");
-  await expect(page.getByRole("button", { name: "Selection discussion" })).toBeVisible();
+  await expect(page.getByTestId("chat-messages")).toContainText("Explain the tone.");
+  const textContext = page.getByTestId("message-text-context").first();
+  await expect(textContext).toBeVisible();
+  await textContext.hover();
+  await expect(page.getByTestId("message-text-context-popover").first()).toContainText("Le petit prince");
 
   const firstPageBox = await pageText.boundingBox();
   expect(firstPageBox).not.toBeNull();
@@ -567,14 +571,14 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await expectPage(page, 2, 2);
   await openLibrary(page);
   await page.getByTestId("search-input").fill("tone");
-  const chatResult = page.getByTestId("search-result").filter({ hasText: "Selection discussion" }).first();
+  const chatResult = page.getByTestId("search-result").filter({ hasText: "Saved AI conversation" }).first();
   await expect(chatResult).toBeVisible();
   await chatResult.click();
   await expectPage(page, 1, 2);
   await expect(page.getByTestId("chat-messages")).toContainText("Explain the tone.");
   await openAssistant(page);
 
-  const selectionChatChip = page.getByTestId("chat-chip").filter({ hasText: "Selection discussion" });
+  const selectionChatChip = page.getByTestId("chat-chip").filter({ hasText: "Explain the tone" });
   await selectionChatChip.getByTestId("delete-chat").click();
   await expect(selectionChatChip).toHaveCount(0);
   await expect(page.getByTestId("empty-chat-copy")).toHaveText("No messages");
@@ -630,6 +634,131 @@ test("caches selection AI results and regenerates through query cache", async ({
   await page.getByTestId("menu-define").click();
   await expect(page.getByTestId("ai-result")).toContainText("Regenerated definition");
   expect(defineCount).toBe(2);
+});
+
+test("opens a newly created chat immediately while the first message is sending", async ({ page }, testInfo) => {
+  const title = `Immediate chat activation ${testInfo.project.name}`;
+  await createTextDocument(title);
+  let delayedOnce = false;
+  await page.route("**/api/chats/*/messages", async (route) => {
+    if (!delayedOnce) {
+      delayedOnce = true;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await openAssistant(page);
+  await page.getByTestId("chat-input").fill("Can you describe it better?");
+  await page.getByTestId("send-chat").click();
+
+  await expect(page.getByRole("button", { name: "Document discussion" })).toBeVisible();
+  await expect(page.getByTestId("chat-messages")).toContainText("Can you describe it better?");
+  await expect(page.getByTestId("empty-chat-copy")).toHaveCount(0);
+  await expectAiResult(page.getByTestId("chat-messages"), "Test assistant");
+  await expect(page.getByTestId("chat-chip").filter({ hasText: "Can you describe it better?" })).toBeVisible();
+});
+
+test("generates chat titles and pins renamed full-width chat rows", async ({ page }, testInfo) => {
+  const title = `Pinned chat ${testInfo.project.name}`;
+  await createTextDocument(title);
+  await page.goto("/");
+  await openLibrary(page);
+  await page.getByTestId("document-row").filter({ hasText: title }).click();
+  await openAssistant(page);
+
+  await page.getByTestId("chat-input").fill("Can you describe this passage better?");
+  await page.getByTestId("send-chat").click();
+  await expect(page.getByTestId("chat-chip").filter({ hasText: "Can you describe this passage better?" })).toBeVisible();
+
+  const chip = page.getByTestId("chat-chip").filter({ hasText: "Can you describe this passage better?" });
+  const widthDelta = await chip.evaluate((node) => {
+    const chipBox = node.getBoundingClientRect();
+    const listBox = node.parentElement!.getBoundingClientRect();
+    return Math.abs(chipBox.width - listBox.width);
+  });
+  expect(widthDelta).toBeLessThanOrEqual(2);
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toBe("Chat title");
+    await dialog.accept("Pinned explanation");
+  });
+  await chip.getByTestId("pin-chat").click();
+  const pinnedChip = page.getByTestId("chat-chip").filter({ hasText: "Pinned explanation" });
+  await expect(pinnedChip).toBeVisible();
+  await expect(pinnedChip.getByTestId("pin-chat")).toHaveAttribute("title", "Unpin chat");
+
+  const chatsResponse = await fetch(`${apiBase}/api/chats`);
+  expect(chatsResponse.ok).toBeTruthy();
+  const { chats } = (await chatsResponse.json()) as { chats: Array<{ title: string; pinned: boolean }> };
+  expect(chats.some((chat) => chat.title === "Pinned explanation" && chat.pinned)).toBeTruthy();
+});
+
+test("returns from an active chat to the chat list without deleting it", async ({ page }, testInfo) => {
+  const title = `Back to chats ${testInfo.project.name}`;
+  await createTextDocument(title);
+  await page.goto("/");
+  await openLibrary(page);
+  await page.getByTestId("document-row").filter({ hasText: title }).click();
+  await openAssistant(page);
+
+  await page.getByTestId("chat-input").fill("Can you explain this?");
+  await page.getByTestId("send-chat").click();
+  await expect(page.getByTestId("chat-messages")).toContainText("Can you explain this?");
+  await expect(page.getByTestId("back-to-chats")).toBeVisible();
+  const activeChipOrder = await page.getByTestId("chat-chip").filter({ hasText: "Can you explain this?" }).evaluate((chip) => {
+    const back = chip.querySelector('[data-testid="back-to-chats"]')?.getBoundingClientRect();
+    const title = chip.querySelector(".chat-select span")?.getBoundingClientRect();
+    return back && title ? back.left < title.left : false;
+  });
+  expect(activeChipOrder).toBeTruthy();
+
+  await page.getByTestId("back-to-chats").click();
+  await expect(page.getByTestId("empty-chat-copy")).toHaveText("No messages");
+  const chatChip = page.getByTestId("chat-chip").filter({ hasText: "Can you explain this?" });
+  await expect(chatChip).toBeVisible();
+
+  await chatChip.getByRole("button").filter({ hasText: "Can you explain this?" }).click();
+  await expect(page.getByTestId("chat-messages")).toContainText("Can you explain this?");
+});
+
+test("renders existing chat messages when older responses do not include selection contexts", async ({ page }, testInfo) => {
+  const title = `Legacy chat message shape ${testInfo.project.name}`;
+  const { document } = await createTextDocument(title);
+  const createChatResponse = await fetch(`${apiBase}/api/chats`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentId: document.id, title: "Selection discussion" })
+  });
+  expect(createChatResponse.ok).toBeTruthy();
+  const { chat } = (await createChatResponse.json()) as { chat: { id: string } };
+  const messageResponse = await fetch(`${apiBase}/api/chats/${chat.id}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: "Can you describe this division?", selectionContexts: [] })
+  });
+  expect(messageResponse.ok).toBeTruthy();
+
+  await page.route(`**/api/chats/${chat.id}`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.chat.messages = body.chat.messages.map((message: Record<string, unknown>) => {
+      const { selectionContexts: _selectionContexts, ...legacyMessage } = message;
+      return legacyMessage;
+    });
+    await route.fulfill({ response, json: body });
+  });
+
+  await page.goto("/");
+  await openLibrary(page);
+  await page.getByTestId("document-row").filter({ hasText: title }).click();
+  await openAssistant(page);
+  await page.getByTestId("chat-chip").filter({ hasText: "Can you describe this division?" }).locator(".chat-select").click();
+
+  await expect(page.getByTestId("empty-chat-copy")).toHaveCount(0);
+  await expect(page.getByTestId("chat-messages")).toContainText("Can you describe this division?");
+  await expect(page.getByTestId("chat-messages")).toContainText(realAi ? /.+/ : "Test assistant");
 });
 
 test("ignores stale selection AI work after the selection changes", async ({ page }, testInfo) => {
@@ -1736,6 +1865,11 @@ test("imports images, crops a region selection, and chats about it", async ({ pa
   await page.getByTestId("chat-input").fill("What should I notice in this panel?");
   await page.getByTestId("send-chat").click();
   await expectAiResult(page.getByTestId("chat-messages"), "selected page-image");
+  await expect(page.getByTestId("message-image-context")).toBeVisible();
+  await page.getByTestId("message-image-context").click();
+  await expect(page.getByTestId("image-preview")).toBeVisible();
+  await page.getByTestId("image-preview").click({ position: { x: 4, y: 4 } });
+  await expect(page.getByTestId("image-preview")).toHaveCount(0);
 });
 
 test("uses the source PDF as AI context for visual PDF regions", async ({}, testInfo) => {
@@ -2311,7 +2445,7 @@ test("draft selections only replace notes and chat context after side-panel inpu
   await page.getByTestId("chat-input").fill("Discuss this direct draft selection");
   await page.getByTestId("send-chat").click();
   await expect(page.getByTestId("chat-messages")).toContainText("Discuss this direct draft selection");
-  await expect(page.getByRole("button", { name: "Selection discussion" })).toBeVisible();
+  await expect(page.getByTestId("chat-chip").filter({ hasText: "Discuss this direct draft selection" })).toBeVisible();
   await expect(page.getByTestId("chat-context-pill")).toHaveCount(0);
 });
 

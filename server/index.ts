@@ -25,9 +25,10 @@ import {
   recordLibraryLocation,
   saveReadingPosition,
   search,
+  updateChat,
   updateNote
 } from "./db";
-import { generateAiResponse } from "./ai";
+import { generateAiResponse, generateChatTitle } from "./ai";
 import { importBlob, importPath } from "./importer";
 import { contentTypeForPath, parseArchiveSourceRef, parseDataUrl, readArchiveEntry } from "./media";
 import { resolveSelectionFileContext } from "./selectionContext";
@@ -318,6 +319,13 @@ const route = async (request: Request) => {
     return json({ deleted: deleteChat(chatMatch[1]) });
   }
 
+  if (chatMatch && request.method === "PATCH") {
+    const input = await readJson<{ title?: string; pinned?: boolean }>(request);
+    const chat = updateChat(chatMatch[1], input);
+    if (!chat) throw new HttpError(404, "Chat not found");
+    return json({ chat });
+  }
+
   const chatMessagesMatch = path.match(/^\/api\/chats\/([^/]+)\/messages$/);
   if (chatMessagesMatch && request.method === "POST") {
     const input = await readJson<{
@@ -335,7 +343,8 @@ const route = async (request: Request) => {
     const chat = getChat(chatMessagesMatch[1]);
     if (!chat) throw new HttpError(404, "Chat not found");
 
-    addChatMessage(chat.id, "user", requireText(input.content, "Message"));
+    const messageText = requireText(input.content, "Message");
+    addChatMessage(chat.id, "user", messageText, input.selectionContexts ?? []);
     const transientSelections = (input.selectionContexts ?? []).map(transientSelectionFrom);
     const persistedSelection = input.selectionId ? getSelection(input.selectionId) : chat.selectionId ? getSelection(chat.selectionId) : null;
     const selection = transientSelections[0] ?? persistedSelection;
@@ -352,6 +361,11 @@ const route = async (request: Request) => {
       messages: nextChat?.messages ?? []
     });
     const assistant = addChatMessage(chat.id, "assistant", ai.content);
+    const isGenericTitle = /^(Selection discussion|Document discussion|Reading chat)$/.test(chat.title);
+    if (isGenericTitle && (nextChat?.messages.length ?? 0) <= 1) {
+      const title = await generateChatTitle(`${messageText}\n\n${selectedText}`.trim());
+      updateChat(chat.id, { title });
+    }
     return json({ message: assistant, chat: getChat(chat.id), ai });
   }
 

@@ -24,6 +24,8 @@ interface AssistantPanelProps {
   onStartNotesResize: (event: PointerEvent) => void;
   onSelectChat: (chatId: string) => void;
   onDeleteChat: (chatId: string) => void;
+  onUpdateChat: (chatId: string, input: { title?: string; pinned?: boolean }) => void;
+  onBackToChats: () => void;
   onChatDraft: (body: string) => void;
   onSendChat: () => void;
 }
@@ -58,6 +60,8 @@ export function AssistantPanel(props: AssistantPanelProps) {
         focusRequest={props.chatFocusRequest}
         onSelectChat={props.onSelectChat}
         onDeleteChat={props.onDeleteChat}
+        onUpdateChat={props.onUpdateChat}
+        onBackToChats={props.onBackToChats}
         onChatDraft={props.onChatDraft}
         onSendChat={props.onSendChat}
       />

@@ -113,10 +113,10 @@ const taskSystemPrompt = (task: AiTask) => {
   }
 
   if (task === "define") {
-    return `${base} Define or explain the user's exact selected text. Do not say that no selection was provided or ask for a more specific selection. Keep the answer short and useful.`;
+    return `${base} Define or explain the user's exact selected text. Do not say that no selection was provided or ask for a more specific selection. Keep the answer short and useful. Prefer one compact paragraph. Do not use markdown headings, bullet lists, tables, or standalone label lines.`;
   }
 
-  return `${base} Continue the saved chat about the selected text or image region. Use prior messages and preserve context.`;
+  return `${base} Continue the saved chat about the selected text or image region. Use prior messages and preserve context. Use normal markdown when it genuinely helps: short headings, bullets, and lists are allowed. Do not split a sentence into heading fragments or standalone label lines; headings must be real section titles, not words from the sentence. Keep the answer focused.`;
 };
 
 const buildPrompt = (args: GenerateArgs) => {
@@ -125,7 +125,7 @@ const buildPrompt = (args: GenerateArgs) => {
   }
 
   if (args.task === "define") {
-    return `Language: ${args.sourceLanguage ?? "auto"}\n\nDefine or explain this exact selection. Keep it short. Do not add headings.\n\n${args.text}`;
+    return `Language: ${args.sourceLanguage ?? "auto"}\n\nDefine or explain this exact selection. Keep it short, usually one compact paragraph. Do not add headings, labels, bullets, or markdown.\n\n${args.text}`;
   }
 
   if (args.selection?.kind === "image") {
@@ -140,7 +140,7 @@ Current context:
 ${args.text}`;
   }
 
-  return `Selected reading context:\n${args.selection?.text || args.text}`;
+  return `Selected reading context:\n${args.selection?.text || args.text}\n\nAnswer the user's latest message directly. Use clean markdown only when it improves readability.`;
 };
 
 const userMessageFor = (text: string, fileContext?: AiFileContext | null) => {
@@ -267,4 +267,32 @@ export const generateAiResponse = async (args: GenerateArgs): Promise<AiResponse
   }
 
   return generateWithAiSdk(provider, args);
+};
+
+const titleFallback = (text: string) => {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return "Chat";
+  return clean.length > 42 ? `${clean.slice(0, 41).trim()}...` : clean;
+};
+
+export const generateChatTitle = async (text: string): Promise<string> => {
+  if (process.env.AI_TEST_MOCK === "1") return titleFallback(text);
+  const provider = providerConfig();
+  if (!provider) return titleFallback(text);
+
+  const prompt = `Create a concise chat title for this reader question and context.
+Return only the title. No quotes. No punctuation unless needed. Max 5 words.
+
+${text}`;
+
+  try {
+    const response = await generateWithAiSdk(provider, {
+      task: "chat",
+      text: prompt,
+      messages: []
+    });
+    return titleFallback(response.content);
+  } catch {
+    return titleFallback(text);
+  }
 };

@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS chats (
   document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
   selection_id TEXT REFERENCES selections(id) ON DELETE SET NULL,
   title TEXT NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -116,6 +117,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
   role TEXT NOT NULL,
   content TEXT NOT NULL,
+  context_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL
 );
 
@@ -164,6 +166,18 @@ try {
 
 try {
   db.query("ALTER TABLE document_pages ADD COLUMN source_path TEXT").run();
+} catch {
+  // Existing databases already have the column.
+}
+
+try {
+  db.query("ALTER TABLE chats ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0").run();
+} catch {
+  // Existing databases already have the column.
+}
+
+try {
+  db.query("ALTER TABLE chat_messages ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'").run();
 } catch {
   // Existing databases already have the column.
 }
@@ -220,6 +234,7 @@ const chatFromRow = (row: Row): ChatRecord => ({
   documentId: stringOrNull(row.document_id),
   selectionId: stringOrNull(row.selection_id),
   title: String(row.title ?? "Chat"),
+  pinned: Boolean(numberValue(row.pinned)),
   createdAt: numberValue(row.created_at),
   updatedAt: numberValue(row.updated_at)
 });
@@ -229,6 +244,7 @@ const messageFromRow = (row: Row): ChatMessage => ({
   chatId: String(row.chat_id),
   role: row.role as ChatMessage["role"],
   content: String(row.content ?? ""),
+  selectionContexts: fromJson<ChatMessage["selectionContexts"]>(row.context_json, []),
   createdAt: numberValue(row.created_at)
 });
 
@@ -468,8 +484,8 @@ export const createChat = (input: CreateChatInput): ChatWithMessages => {
   const title = input.title ?? (selection?.text ? selection.text.slice(0, 60) : "Reading chat");
 
   db.query(
-    `INSERT INTO chats (id, document_id, selection_id, title, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO chats (id, document_id, selection_id, title, pinned, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 0, ?, ?)`
   ).run(chatId, input.documentId ?? selection?.documentId ?? null, input.selectionId ?? null, title, timestamp, timestamp);
 
   return getChat(chatId) as ChatWithMessages;
@@ -478,19 +494,19 @@ export const createChat = (input: CreateChatInput): ChatWithMessages => {
 export const listChats = (filters: { documentId?: string; selectionId?: string } = {}): ChatRecord[] => {
   if (filters.selectionId) {
     return db
-      .query("SELECT * FROM chats WHERE selection_id = ? ORDER BY updated_at DESC")
+      .query("SELECT * FROM chats WHERE selection_id = ? ORDER BY pinned DESC, updated_at DESC")
       .all(filters.selectionId)
       .map((row) => chatFromRow(row as Row));
   }
 
   if (filters.documentId) {
     return db
-      .query("SELECT * FROM chats WHERE document_id = ? ORDER BY updated_at DESC")
+      .query("SELECT * FROM chats WHERE document_id = ? ORDER BY pinned DESC, updated_at DESC")
       .all(filters.documentId)
       .map((row) => chatFromRow(row as Row));
   }
 
-  return db.query("SELECT * FROM chats ORDER BY updated_at DESC").all().map((row) => chatFromRow(row as Row));
+  return db.query("SELECT * FROM chats ORDER BY pinned DESC, updated_at DESC").all().map((row) => chatFromRow(row as Row));
 };
 
 export const getChat = (chatId: string): ChatWithMessages | null => {
@@ -508,14 +524,30 @@ export const deleteChat = (chatId: string): boolean => {
   return result.changes > 0;
 };
 
-export const addChatMessage = (chatId: string, role: ChatMessage["role"], content: string): ChatMessage => {
+export const updateChat = (chatId: string, input: { title?: string; pinned?: boolean }): ChatWithMessages | null => {
+  const current = getChat(chatId);
+  if (!current) return null;
+  const timestamp = now();
+  const title = input.title?.trim() || current.title;
+  const pinned = input.pinned ?? current.pinned;
+  db.query("UPDATE chats SET title = ?, pinned = ?, updated_at = ? WHERE id = ?").run(title, pinned ? 1 : 0, timestamp, chatId);
+  return getChat(chatId);
+};
+
+export const addChatMessage = (
+  chatId: string,
+  role: ChatMessage["role"],
+  content: string,
+  selectionContexts: ChatMessage["selectionContexts"] = []
+): ChatMessage => {
   const timestamp = now();
   const messageId = id();
-  db.query("INSERT INTO chat_messages (id, chat_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)").run(
+  db.query("INSERT INTO chat_messages (id, chat_id, role, content, context_json, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
     messageId,
     chatId,
     role,
     content,
+    toJson(selectionContexts),
     timestamp
   );
   db.query("UPDATE chats SET updated_at = ? WHERE id = ?").run(timestamp, chatId);

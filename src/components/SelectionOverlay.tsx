@@ -1,6 +1,7 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
 import { useQueryClient } from "@tanstack/solid-query";
-import { api, type ChatSelectionContext } from "../api";
+import { api } from "../api";
+import type { ChatSelectionContext } from "../../shared/types";
 import type { DraftSelection } from "../stores/readerStore";
 import type { DocumentWithPages, SelectionRecord } from "../../shared/types";
 import { SelectionMenu, type FloatingMenu } from "./SelectionMenu";

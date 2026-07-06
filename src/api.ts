@@ -1,5 +1,6 @@
 import type {
   AiResponse,
+  ChatSelectionContext,
   ChatRecord,
   ChatWithMessages,
   CreateSelectionInput,
@@ -13,15 +14,6 @@ import type {
   SelectionKind,
   SelectionRecord
 } from "../shared/types";
-
-export interface ChatSelectionContext {
-  documentId: string;
-  pageId?: string | null;
-  kind: SelectionKind;
-  text?: string;
-  imageData?: string | null;
-  region?: SelectionRecord["region"];
-}
 
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   let response: Response;
@@ -160,6 +152,12 @@ export const api = {
   },
   async deleteChat(chatId: string) {
     return request<{ deleted: boolean }>(`/api/chats/${chatId}`, { method: "DELETE" });
+  },
+  async updateChat(chatId: string, input: { title?: string; pinned?: boolean }) {
+    return request<{ chat: ChatWithMessages }>(`/api/chats/${chatId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    });
   },
   async sendMessage(chatId: string, content: string, selectionId?: string | null, selectionContexts?: ChatSelectionContext[]) {
     return request<{ chat: ChatWithMessages }>(`/api/chats/${chatId}/messages`, {

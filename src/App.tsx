@@ -1,7 +1,7 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
-import { api, type ChatSelectionContext } from "./api";
+import { api } from "./api";
 import { AssistantPanel } from "./components/AssistantPanel";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { FilePickers } from "./components/FilePickers";
@@ -19,6 +19,8 @@ import { createLayoutStore } from "./stores/layoutStore";
 import { createReaderStore, type ChatContextDraft, type DraftSelection } from "./stores/readerStore";
 import { createUiStore } from "./stores/uiStore";
 import type {
+  ChatMessage,
+  ChatSelectionContext,
   DocumentPage,
   ReadingPosition,
   SearchResult,
@@ -846,6 +848,16 @@ export default function App() {
     if (reader.activeChat?.id === chatId) setReader("activeChat", null);
   };
 
+  const updateSavedChat = async (chatId: string, input: { title?: string; pinned?: boolean }) => {
+    const { chat } = await api.updateChat(chatId, input);
+    setReader("chats", (items) =>
+      [chat, ...items.filter((item) => item.id !== chat.id)].sort(
+        (a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt
+      )
+    );
+    if (reader.activeChat?.id === chat.id) setReader("activeChat", chat);
+  };
+
   const commitDraftForSidePanel = async () => {
     if (!reader.draftSelection) return reader.currentSelection;
     return await saveDraftSelection({ silent: true, preserveUserSelection: true });
@@ -940,7 +952,6 @@ export default function App() {
     try {
       const consumedDraftSelection = reader.draftSelection;
       const chat = await ensureChat();
-      setChatDraft("");
       const contexts = effectiveChatContexts().map((context) => ({
         documentId: context.documentId,
         pageId: context.pageId,
@@ -949,6 +960,21 @@ export default function App() {
         imageData: context.imageData ?? null,
         region: context.region
       }));
+      const optimisticUserMessage: ChatMessage = {
+        id: `pending-${Date.now()}`,
+        chatId: chat.id,
+        role: "user",
+        content: message,
+        selectionContexts: contexts,
+        createdAt: Date.now()
+      };
+      const optimisticChat = {
+        ...chat,
+        messages: [...chat.messages, optimisticUserMessage]
+      };
+      setReader("activeChat", optimisticChat);
+      setReader("chats", (items) => [optimisticChat, ...items.filter((item) => item.id !== optimisticChat.id)]);
+      setChatDraft("");
       const { chat: nextChat } = await api.sendMessage(chat.id, message, reader.currentSelection?.id, contexts);
       setReader("activeChat", nextChat);
       setReader("chatContexts", []);
@@ -1167,6 +1193,8 @@ export default function App() {
             onStartNotesResize={startNotesResize}
             onSelectChat={(chatId) => void activateChat(chatId)}
             onDeleteChat={(chatId) => void deleteSavedChat(chatId)}
+            onUpdateChat={(chatId, input) => void updateSavedChat(chatId, input)}
+            onBackToChats={() => setReader("activeChat", null)}
             onChatDraft={handleChatDraft}
             onSendChat={() => void sendChat()}
           />

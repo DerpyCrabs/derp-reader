@@ -1,8 +1,13 @@
-import { For, Show, createEffect } from "solid-js";
+import { For, Show, createEffect, createSignal } from "solid-js";
+import ArrowLeft from "lucide-solid/icons/arrow-left";
 import ArrowUp from "lucide-solid/icons/arrow-up";
 import MessageCircle from "lucide-solid/icons/message-circle";
+import Pin from "lucide-solid/icons/pin";
+import PinOff from "lucide-solid/icons/pin-off";
 import Trash2 from "lucide-solid/icons/trash-2";
-import type { ChatRecord, ChatWithMessages, SelectionRecord } from "../../shared/types";
+import X from "lucide-solid/icons/x";
+import { Portal } from "solid-js/web";
+import type { ChatMessage, ChatRecord, ChatWithMessages, SelectionRecord } from "../../shared/types";
 import { MarkdownContent } from "./MarkdownContent";
 
 interface ChatPaneProps {
@@ -14,12 +19,16 @@ interface ChatPaneProps {
   focusRequest: number;
   onSelectChat: (chatId: string) => void;
   onDeleteChat: (chatId: string) => void;
+  onUpdateChat: (chatId: string, input: { title?: string; pinned?: boolean }) => void;
+  onBackToChats: () => void;
   onChatDraft: (body: string) => void;
   onSendChat: () => void;
 }
 
 export function ChatPane(props: ChatPaneProps) {
   let chatInputRef!: HTMLInputElement;
+  const [previewImage, setPreviewImage] = createSignal<string | null>(null);
+  const messageContexts = (message: ChatMessage) => message.selectionContexts ?? [];
   const chatPlaceholder = () =>
     props.stagedContextCount > 0
       ? `Ask about ${props.stagedContextCount === 1 ? "this selection" : `${props.stagedContextCount} selections`}`
@@ -49,9 +58,29 @@ export function ChatPane(props: ChatPaneProps) {
         <For each={props.chats}>
           {(chat) => (
             <div class="chat-chip" classList={{ active: props.activeChat?.id === chat.id }} data-testid="chat-chip">
+              <Show when={props.activeChat?.id === chat.id}>
+                <button class="chat-back icon-button" data-testid="back-to-chats" title="Back to chat list" onClick={props.onBackToChats}>
+                  <ArrowLeft size={14} />
+                </button>
+              </Show>
               <button class="chat-select" onClick={() => props.onSelectChat(chat.id)}>
                 <MessageCircle size={16} />
                 <span>{chat.title}</span>
+              </button>
+              <button
+                class="chat-pin icon-button"
+                data-testid="pin-chat"
+                title={chat.pinned ? "Unpin chat" : "Pin chat"}
+                onClick={() => {
+                  if (chat.pinned) {
+                    props.onUpdateChat(chat.id, { pinned: false });
+                    return;
+                  }
+                  const title = window.prompt("Chat title", chat.title)?.trim();
+                  if (title !== undefined) props.onUpdateChat(chat.id, { pinned: true, title: title || chat.title });
+                }}
+              >
+                {chat.pinned ? <PinOff size={14} /> : <Pin size={14} />}
               </button>
               <button class="chat-delete icon-button" data-testid="delete-chat" title="Delete chat" onClick={() => props.onDeleteChat(chat.id)}>
                 <Trash2 size={14} />
@@ -69,6 +98,34 @@ export function ChatPane(props: ChatPaneProps) {
             {(message) => (
               <div class={`message ${message.role}`}>
                 <strong>{message.role}</strong>
+                <Show when={messageContexts(message).length > 0}>
+                  <div class="message-contexts" data-testid="message-selection-contexts">
+                    <For each={messageContexts(message)}>
+                      {(context) => (
+                        <Show
+                          when={context.kind === "image"}
+                          fallback={
+                            <span class="message-context text-context" data-testid="message-text-context">
+                              Selection
+                              <span class="context-popover" data-testid="message-text-context-popover">
+                                {context.text || "Selected text"}
+                              </span>
+                            </span>
+                          }
+                        >
+                          <button
+                            class="message-context image-context"
+                            data-testid="message-image-context"
+                            title="Preview selected image"
+                            onClick={() => context.imageData && setPreviewImage(context.imageData)}
+                          >
+                            Image
+                          </button>
+                        </Show>
+                      )}
+                    </For>
+                  </div>
+                </Show>
                 <MarkdownContent content={message.content} />
               </div>
             )}
@@ -104,6 +161,18 @@ export function ChatPane(props: ChatPaneProps) {
           <ArrowUp size={17} strokeWidth={2.25} />
         </button>
       </div>
+      <Show when={previewImage()}>
+        {(image) => (
+          <Portal>
+            <div class="image-preview-backdrop" data-testid="image-preview" onClick={() => setPreviewImage(null)}>
+              <button class="image-preview-close icon-button" title="Close preview" onClick={() => setPreviewImage(null)}>
+                <X size={18} strokeWidth={2.25} />
+              </button>
+              <img src={image()} alt="Selected image context" onClick={(event) => event.stopPropagation()} />
+            </div>
+          </Portal>
+        )}
+      </Show>
     </section>
   );
 }

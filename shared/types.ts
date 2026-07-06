@@ -68,6 +68,7 @@ export interface ChatRecord {
   documentId: string | null;
   selectionId: string | null;
   title: string;
+  pinned: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -77,6 +78,7 @@ export interface ChatMessage {
   chatId: string;
   role: ChatRole;
   content: string;
+  selectionContexts: ChatSelectionContext[];
   createdAt: number;
 }
 
@@ -170,4 +172,13 @@ export interface CreateChatInput {
   documentId?: string | null;
   selectionId?: string | null;
   title?: string;
+}
+
+export interface ChatSelectionContext {
+  documentId: string;
+  pageId?: string | null;
+  kind: SelectionKind;
+  text?: string;
+  imageData?: string | null;
+  region?: SelectionRegion | null;
 }
