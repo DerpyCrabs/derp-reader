@@ -2069,6 +2069,9 @@ test("restores the exact saved scroll offset inside long PDF pages", async ({ pa
   });
   await page.reload();
   await expect(page.getByTestId("active-title")).toContainText(`pdf-position-offset-${suffix}`);
+  expect(await page.getByTestId("reader-viewport").evaluate((viewport) => getComputedStyle(viewport).scrollBehavior)).toBe(
+    "auto"
+  );
   await expect
     .poll(async () => Math.round(await page.getByTestId("reader-viewport").evaluate((viewport) => viewport.scrollTop)))
     .toBe(Math.round(savedTop));

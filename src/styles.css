@@ -594,7 +594,6 @@ div.list-row:hover {
   min-height: 0;
   overflow: auto;
   padding: 4px 8px 8px;
-  scroll-behavior: smooth;
   outline: 0;
 }
 
