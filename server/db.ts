@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS reading_positions (
   scroll_y REAL NOT NULL DEFAULT 0,
   zoom REAL NOT NULL DEFAULT 1,
   view_mode TEXT NOT NULL DEFAULT 'continuous',
+  default_action TEXT NOT NULL DEFAULT 'define',
   updated_at INTEGER NOT NULL
 );
 
@@ -178,6 +179,12 @@ try {
 
 try {
   db.query("ALTER TABLE chat_messages ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'").run();
+} catch {
+  // Existing databases already have the column.
+}
+
+try {
+  db.query("ALTER TABLE reading_positions ADD COLUMN default_action TEXT NOT NULL DEFAULT 'define'").run();
 } catch {
   // Existing databases already have the column.
 }
@@ -604,6 +611,7 @@ export const getReadingPosition = (documentId: string): ReadingPosition | null =
     scrollY: numberValue(row.scroll_y),
     zoom: numberValue(row.zoom, 1),
     viewMode: row.view_mode === "page" ? "page" : "continuous",
+    defaultAction: row.default_action === "translate" || row.default_action === "none" ? row.default_action : "define",
     updatedAt: numberValue(row.updated_at)
   };
 };
@@ -613,24 +621,29 @@ export const saveReadingPosition = (
   input: Partial<Omit<ReadingPosition, "documentId" | "updatedAt">>
 ): ReadingPosition => {
   const current = getReadingPosition(documentId);
+  const defaultAction = input.defaultAction === "translate" || input.defaultAction === "none" || input.defaultAction === "define"
+    ? input.defaultAction
+    : current?.defaultAction ?? "define";
   const next = {
     pageIndex: input.pageIndex ?? current?.pageIndex ?? 0,
     scrollY: input.scrollY ?? current?.scrollY ?? 0,
     zoom: input.zoom ?? current?.zoom ?? 1,
-    viewMode: input.viewMode ?? current?.viewMode ?? "continuous"
+    viewMode: input.viewMode ?? current?.viewMode ?? "continuous",
+    defaultAction
   };
   const timestamp = now();
 
   db.query(
-    `INSERT INTO reading_positions (document_id, page_index, scroll_y, zoom, view_mode, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO reading_positions (document_id, page_index, scroll_y, zoom, view_mode, default_action, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(document_id) DO UPDATE SET
        page_index = excluded.page_index,
        scroll_y = excluded.scroll_y,
        zoom = excluded.zoom,
        view_mode = excluded.view_mode,
+       default_action = excluded.default_action,
        updated_at = excluded.updated_at`
-  ).run(documentId, next.pageIndex, next.scrollY, next.zoom, next.viewMode, timestamp);
+  ).run(documentId, next.pageIndex, next.scrollY, next.zoom, next.viewMode, next.defaultAction, timestamp);
 
   return {
     documentId,
@@ -638,6 +651,7 @@ export const saveReadingPosition = (
     scrollY: next.scrollY,
     zoom: next.zoom,
     viewMode: next.viewMode,
+    defaultAction: next.defaultAction,
     updatedAt: timestamp
   };
 };

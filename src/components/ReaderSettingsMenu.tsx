@@ -9,6 +9,7 @@ type ViewMode = "page" | "continuous";
 type FitMode = "manual" | "width" | "height";
 type ThemeMode = "light" | "dark";
 type SelectionMode = "text" | "image";
+type DefaultAction = "define" | "translate" | "none";
 
 interface ReaderSettingsMenuProps {
   visible: boolean;
@@ -17,12 +18,14 @@ interface ReaderSettingsMenuProps {
   fitMode: FitMode;
   themeMode: ThemeMode;
   selectionMode: SelectionMode;
+  defaultAction: DefaultAction;
   onToggle: () => void;
   onSetViewMode: (mode: ViewMode) => void;
   onFit: (mode: Exclude<FitMode, "manual">) => void;
   onZoom: (next: (value: number) => number) => void;
   onSetThemeMode: (mode: ThemeMode) => void;
   onSetSelectionMode: (mode: SelectionMode) => void;
+  onSetDefaultAction: (action: DefaultAction) => void;
 }
 
 export function ReaderSettingsMenu(props: ReaderSettingsMenuProps) {
@@ -150,6 +153,21 @@ export function ReaderSettingsMenu(props: ReaderSettingsMenuProps) {
               >
                 Image
               </button>
+            </div>
+          </section>
+          <section>
+            <h2>Default action</h2>
+            <div class="segmented default-action-control" role="group" aria-label="Default selection action">
+              {(["define", "translate", "none"] as const).map((action) => (
+                <button
+                  data-testid={`default-action-${action}`}
+                  classList={{ active: props.defaultAction === action }}
+                  title={action === "none" ? "Do not run an action automatically" : `${action[0].toUpperCase()}${action.slice(1)} selected content automatically`}
+                  onClick={() => runAndClose(() => props.onSetDefaultAction(action))}
+                >
+                  {action[0].toUpperCase()}{action.slice(1)}
+                </button>
+              ))}
             </div>
           </section>
         </div>

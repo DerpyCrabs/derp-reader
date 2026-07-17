@@ -641,7 +641,6 @@ test("caches selection AI results and regenerates through query cache", async ({
 
   await page.goto("/");
   await selectTextIn(page, "page-text", "Le petit prince");
-  await page.getByTestId("menu-define").click();
   await expect(page.getByTestId("ai-result")).toContainText("Cached definition");
   await page.getByTestId("menu-translate").click();
   await expect(page.getByTestId("ai-result")).toContainText("Cached translation");
@@ -653,6 +652,52 @@ test("caches selection AI results and regenerates through query cache", async ({
   await page.getByTestId("menu-define").click();
   await expect(page.getByTestId("ai-result")).toContainText("Regenerated definition");
   expect(defineCount).toBe(2);
+});
+
+test("runs and remembers the default selection action per document", async ({ page }, testInfo) => {
+  const firstTitle = `Default action first ${testInfo.project.name}`;
+  const secondTitle = `Default action second ${testInfo.project.name}`;
+  await createTextDocument(firstTitle);
+  await createTextDocument(secondTitle);
+
+  await page.goto("/");
+  await openLibrary(page);
+  await page.getByTestId("document-row").filter({ hasText: firstTitle }).click();
+
+  await selectTextIn(page, "page-text", "Le petit prince");
+  await expectAiResult(page.getByTestId("ai-result"), "Test definitions");
+
+  await openSettings(page);
+  await expect(page.getByTestId("default-action-define")).toHaveClass(/active/);
+  const defaultActionLayout = await page.getByRole("group", { name: "Default selection action" }).evaluate((control) => {
+    const buttons = [...control.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+    return {
+      tops: buttons.map((rect) => Math.round(rect.top)),
+      lefts: buttons.map((rect) => Math.round(rect.left)),
+      height: Math.round(control.getBoundingClientRect().height)
+    };
+  });
+  expect(new Set(defaultActionLayout.tops).size).toBe(1);
+  expect(new Set(defaultActionLayout.lefts).size).toBe(3);
+  expect(defaultActionLayout.height).toBeLessThanOrEqual(40);
+  await page.getByTestId("default-action-translate").click();
+  await selectTextIn(page, "page-text", "la fleur");
+  await expectAiResult(page.getByTestId("ai-result"), "Test translation");
+  await page.waitForTimeout(450);
+
+  await page.getByTestId("document-row").filter({ hasText: secondTitle }).click();
+  await openSettings(page);
+  await expect(page.getByTestId("default-action-define")).toHaveClass(/active/);
+  await page.keyboard.press("Escape");
+
+  await page.getByTestId("document-row").filter({ hasText: firstTitle }).click();
+  await openSettings(page);
+  await expect(page.getByTestId("default-action-translate")).toHaveClass(/active/);
+  await page.getByTestId("default-action-none").click();
+  await selectTextIn(page, "page-text", "Le petit prince");
+  await expect(page.getByTestId("selection-menu")).toBeVisible();
+  await expect(page.getByTestId("selection-loading")).toHaveCount(0);
+  await expect(page.getByTestId("ai-result")).toHaveCount(0);
 });
 
 test("opens a newly created chat immediately while the first message is sending", async ({ page }, testInfo) => {
@@ -881,18 +926,13 @@ test("ignores stale selection AI work after the selection changes", async ({ pag
 
   await page.goto("/");
   await selectTextIn(page, "page-text", "Le petit prince");
-  await page.getByTestId("menu-define").click();
   await expect(page.getByTestId("selection-loading")).toBeVisible();
 
   await selectTextIn(page, "page-text", "la fleur");
   await expect(page.getByTestId("selection-preview-text")).toContainText(/la fleur\.?/);
-  await expect(page.getByTestId("selection-loading")).toHaveCount(0);
-  await expect(page.getByTestId("ai-result")).toHaveCount(0);
+  await expect(page.getByTestId("ai-result")).toContainText("Fresh answer");
   await page.waitForTimeout(350);
   await expect(page.getByText("Old stale answer")).toHaveCount(0);
-
-  await page.getByTestId("menu-define").click();
-  await expect(page.getByTestId("ai-result")).toContainText("Fresh answer");
 });
 
 test("renders markdown AI output inside the floating menu", async ({ page }, testInfo) => {
@@ -912,7 +952,6 @@ test("renders markdown AI output inside the floating menu", async ({ page }, tes
 
   await page.goto("/");
   await selectTextIn(page, "page-text", "Le petit prince");
-  await page.getByTestId("menu-define").click();
 
   const result = page.getByTestId("ai-result");
   await expect(result.locator("li")).toHaveCount(3);
@@ -1971,7 +2010,6 @@ test("imports images, crops a region selection, and chats about it", async ({ pa
   await expect(page.getByTestId("region-layer").first().locator(".region-box")).toBeVisible();
   await expect(page.getByTestId("selection-preview-text")).toHaveCount(0);
 
-  await page.getByTestId("menu-define").click();
   await expectAiResult(page.getByTestId("ai-result"), "selected page-image");
   await expect(page.getByTestId("region-layer").first().locator(".region-box")).toBeVisible();
   await expect(page.getByTestId("saved-region-highlight")).toHaveCount(0);

@@ -1,6 +1,7 @@
 export type DocumentType = "pdf" | "manga" | "text";
 export type PageKind = "pdf" | "image" | "text";
 export type SelectionKind = "text" | "image";
+export type DefaultSelectionAction = "define" | "translate" | "none";
 export type ChatRole = "user" | "assistant" | "system";
 
 export interface ReaderDocument {
@@ -101,6 +102,7 @@ export interface ReadingPosition {
   scrollY: number;
   zoom: number;
   viewMode: "page" | "continuous";
+  defaultAction: DefaultSelectionAction;
   updatedAt: number;
 }
 

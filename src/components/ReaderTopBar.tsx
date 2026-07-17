@@ -9,6 +9,7 @@ type ViewMode = "page" | "continuous";
 type FitMode = "manual" | "width" | "height";
 type ThemeMode = "light" | "dark";
 type SelectionMode = "text" | "image";
+type DefaultAction = "define" | "translate" | "none";
 
 interface ReaderTopBarProps {
   title: string;
@@ -23,6 +24,7 @@ interface ReaderTopBarProps {
   showAssistant: boolean;
   themeMode: ThemeMode;
   selectionMode: SelectionMode;
+  defaultAction: DefaultAction;
   onGoToPage: (pageIndex: number) => void;
   onSetViewMode: (mode: ViewMode) => void;
   onFit: (mode: Exclude<FitMode, "manual">) => void;
@@ -31,6 +33,7 @@ interface ReaderTopBarProps {
   onToggleAssistant: () => void;
   onSetThemeMode: (mode: ThemeMode) => void;
   onSetSelectionMode: (mode: SelectionMode) => void;
+  onSetDefaultAction: (action: DefaultAction) => void;
 }
 
 export function ReaderTopBar(props: ReaderTopBarProps) {
@@ -161,6 +164,7 @@ export function ReaderTopBar(props: ReaderTopBarProps) {
                 fitMode={props.fitMode}
                 themeMode={props.themeMode}
                 selectionMode={props.selectionMode}
+                defaultAction={props.defaultAction}
                 onToggle={() => {
                   setSettingsMenuVisible((value) => !value);
                 }}
@@ -169,6 +173,7 @@ export function ReaderTopBar(props: ReaderTopBarProps) {
                 onZoom={props.onZoom}
                 onSetThemeMode={props.onSetThemeMode}
                 onSetSelectionMode={props.onSetSelectionMode}
+                onSetDefaultAction={props.onSetDefaultAction}
               />
             </div>
           </div>

@@ -23,6 +23,7 @@ import type {
   ChatMessage,
   ChatRecord,
   ChatSelectionContext,
+  DefaultSelectionAction,
   DocumentPage,
   ReadingPosition,
   SearchResult,
@@ -65,7 +66,7 @@ export default function App() {
   let chatSendRequestId = 0;
   let latestReadingPosition: {
     documentId: string;
-    payload: Pick<ReadingPosition, "pageIndex" | "zoom" | "viewMode" | "scrollY">;
+    payload: Pick<ReadingPosition, "pageIndex" | "zoom" | "viewMode" | "scrollY" | "defaultAction">;
   } | null = null;
 
   const [noteDraft, setNoteDraft] = createSignal("");
@@ -74,6 +75,7 @@ export default function App() {
   const [chatSending, setChatSending] = createSignal(false);
   const [chatSendError, setChatSendError] = createSignal("");
   const [chatContextEnabled, setChatContextEnabled] = createSignal(true);
+  const [defaultAction, setDefaultAction] = createSignal<DefaultSelectionAction>("define");
   const [searchQuery, setSearchQuery] = createSignal("");
   const { layout, setLayout, assistantStacked } = createLayoutStore();
   const [reader, setReader] = createReaderStore();
@@ -366,6 +368,7 @@ export default function App() {
       setReader("currentPage", Math.min(position?.pageIndex ?? 0, Math.max(document.pages.length - 1, 0)));
       setReader("zoom", position?.zoom ?? 1);
       setLayout("viewMode", position?.viewMode ?? layout.viewMode);
+      setDefaultAction(position?.defaultAction ?? "define");
       setLayout("selectionMode", document.type === "manga" ? "image" : "text");
       setReader("scrollY", position?.scrollY ?? 0);
       await loadSideData(document.id);
@@ -622,7 +625,8 @@ export default function App() {
       pageIndex: reader.currentPage,
       zoom: reader.zoom,
       viewMode: layout.viewMode,
-      scrollY: reader.scrollY
+      scrollY: reader.scrollY,
+      defaultAction: defaultAction()
     };
     latestReadingPosition = { documentId: doc.id, payload };
     const timer = window.setTimeout(() => {
@@ -1240,6 +1244,7 @@ export default function App() {
         showAssistant={layout.showAssistant}
         themeMode={layout.themeMode}
         selectionMode={layout.selectionMode}
+        defaultAction={defaultAction()}
         onGoToPage={goToPage}
         onSetViewMode={setViewMode}
         onFit={applyFit}
@@ -1248,6 +1253,7 @@ export default function App() {
         onToggleAssistant={toggleAssistant}
         onSetThemeMode={setThemeMode}
         onSetSelectionMode={setSelectionMode}
+        onSetDefaultAction={setDefaultAction}
       />
       <div
         class="workspace"
@@ -1373,6 +1379,7 @@ export default function App() {
           currentSelection={reader.currentSelection}
           selectionText={activeSelectionText()}
           canAddToCurrentChat={Boolean(reader.activeChat)}
+          defaultAction={defaultAction()}
           onSelectionTextChange={updateFloatingSelectionText}
           onNote={() => void createNoteFromSelection()}
           onNewChat={() => void startNewChatFromSelection()}

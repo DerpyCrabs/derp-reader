@@ -511,6 +511,10 @@ div.list-row:hover {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
+.settings-menu .default-action-control {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .settings-menu .zoom-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr);

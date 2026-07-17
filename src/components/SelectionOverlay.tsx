@@ -3,7 +3,7 @@ import { queryOptions, useQueryClient } from "@tanstack/solid-query";
 import { api } from "../api";
 import type { ChatSelectionContext } from "../../shared/types";
 import type { DraftSelection } from "../stores/readerStore";
-import type { AiResponse, DocumentWithPages, SelectionRecord } from "../../shared/types";
+import type { AiResponse, DefaultSelectionAction, DocumentWithPages, SelectionRecord } from "../../shared/types";
 import { SelectionMenu, type FloatingMenu } from "./SelectionMenu";
 
 type SelectionAiTask = "translate" | "define";
@@ -15,6 +15,7 @@ interface SelectionOverlayProps {
   currentSelection: SelectionRecord | null;
   selectionText: string;
   canAddToCurrentChat: boolean;
+  defaultAction: DefaultSelectionAction;
   onSelectionTextChange: (text: string) => void;
   onNote: () => void;
   onNewChat: () => void;
@@ -24,6 +25,7 @@ interface SelectionOverlayProps {
 
 export function SelectionOverlay(props: SelectionOverlayProps) {
   let requestVersion = 0;
+  let lastAutoSelectionKey = "";
   const queryClient = useQueryClient();
   const [busy, setBusy] = createSignal("");
   const [activeTask, setActiveTask] = createSignal<SelectionAiTask | null>(null);
@@ -162,6 +164,23 @@ export function SelectionOverlay(props: SelectionOverlayProps) {
     if (!task) return;
     await runSelectionAi(task, { regenerate: true });
   };
+
+  createEffect(() => {
+    const menu = props.menu;
+    const action = props.defaultAction;
+    const draft = props.draftSelection;
+    const selection = props.currentSelection;
+    if (!menu) {
+      lastAutoSelectionKey = "";
+      return;
+    }
+    const key = selection?.id ?? (draft
+      ? JSON.stringify([props.activeDocument?.id, draft.pageId, draft.kind, draft.region])
+      : "");
+    if (!key || key === lastAutoSelectionKey) return;
+    lastAutoSelectionKey = key;
+    if (action !== "none") void runSelectionAi(action);
+  });
 
   return (
     <Show when={props.menu}>
