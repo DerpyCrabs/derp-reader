@@ -112,10 +112,22 @@ const openLibrary = async (page: Page) => {
   await expect(page.getByTestId("search-input")).toBeVisible();
 };
 
-const openAssistant = async (page: Page) => {
-  if (await page.getByTestId("note-editor").isVisible().catch(() => false)) return;
+const ensureAssistantOpen = async (page: Page) => {
+  if (await page.getByTestId("assistant-tab-notes").isVisible().catch(() => false)) return;
   await page.getByTestId("toggle-assistant").click();
+  await expect(page.getByTestId("assistant-tab-notes")).toBeVisible();
+};
+
+const openAssistant = async (page: Page) => {
+  await ensureAssistantOpen(page);
+  await page.getByTestId("assistant-tab-notes").click();
   await expect(page.getByTestId("note-editor")).toBeVisible();
+};
+
+const openChat = async (page: Page) => {
+  await ensureAssistantOpen(page);
+  await page.getByTestId("assistant-tab-chat").click();
+  await expect(page.getByTestId("chat-input")).toBeVisible();
 };
 
 const goToPage = async (page: Page, pageNumber: number) => {
@@ -509,15 +521,17 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await openAssistant(page);
   await page.getByTestId("document-note-mode").click();
   await expect(page.getByTestId("note-editor")).toHaveValue("");
-  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document");
   await page.getByTestId("note-editor").fill("Document note: read this letter again tomorrow.");
   await expect(page.getByTestId("note-row").filter({ hasText: "Document note" })).toBeVisible();
   await page.getByTestId("note-row").filter({ hasText: "Document note" }).getByTestId("delete-note").click();
+  await page.getByTestId("confirm-delete-note").getByRole("button", { name: "Delete" }).click();
   await expect(page.getByTestId("note-row").filter({ hasText: "Document note" })).toHaveCount(0);
   await expect(page.getByTestId("note-editor")).toHaveValue("");
   await page.getByTestId("note-editor").fill("Document note: read this letter again tomorrow.");
   await expect(page.getByTestId("note-row").filter({ hasText: "Document note" })).toBeVisible();
 
+  await openChat(page);
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document…");
   await page.getByTestId("chat-input").fill("What is the whole letter about?");
   await page.getByTestId("send-chat").click();
   await expect(page.getByTestId("chat-messages")).toContainText("What is the whole letter about?");
@@ -526,7 +540,8 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await openAssistant(page);
   await page.getByTestId("note-row").filter({ hasText: "Selection note" }).click();
   await expect(page.getByTestId("note-editor")).toHaveValue("Selection note: silences matter in this passage.");
-  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this selection");
+  await openChat(page);
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this selection…");
   await expect(page.getByTestId("chat-context-pill")).toHaveText("Selection");
 
   await page.getByTestId("chat-input").fill("Explain the tone.");
@@ -576,17 +591,21 @@ test("saves selected text, translates, notes, chats, and searches", async ({ pag
   await chatResult.click();
   await expectPage(page, 1, 2);
   await expect(page.getByTestId("chat-messages")).toContainText("Explain the tone.");
-  await openAssistant(page);
+  await openChat(page);
 
-  const selectionChatChip = page.getByTestId("chat-chip").filter({ hasText: "Explain the tone" });
+  const selectionChatChip = page.locator(".chat-view-header");
   await selectionChatChip.getByTestId("delete-chat").click();
+  await page.getByTestId("confirm-delete-chat").getByRole("button", { name: "Delete" }).click();
   await expect(selectionChatChip).toHaveCount(0);
-  await expect(page.getByTestId("empty-chat-copy")).toHaveText("No messages");
 
-  await page.getByTestId("note-row").filter({ hasText: "Selection note" }).getByTestId("delete-note").click();
-  await expect(page.getByTestId("saved-text-highlight")).toHaveCount(0);
   await openAssistant(page);
-  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document");
+  await page.getByTestId("note-row").filter({ hasText: "Selection note" }).getByTestId("delete-note").click();
+  await page.getByTestId("confirm-delete-note").getByRole("button", { name: "Delete" }).click();
+  const selectionsResponse = await fetch(`${apiBase}/api/selections`);
+  const { selections } = (await selectionsResponse.json()) as { selections: Array<{ text: string }> };
+  expect(selections.some((selection) => selection.text.includes("Le petit prince"))).toBeTruthy();
+  await openChat(page);
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document…");
   await expect(page.getByTestId("chat-context-pill")).toHaveCount(0);
 });
 
@@ -649,15 +668,94 @@ test("opens a newly created chat immediately while the first message is sending"
   });
 
   await page.goto("/");
-  await openAssistant(page);
+  await openChat(page);
   await page.getByTestId("chat-input").fill("Can you describe it better?");
   await page.getByTestId("send-chat").click();
 
-  await expect(page.getByRole("button", { name: "Document discussion" })).toBeVisible();
+  await expect(page.getByTestId("chat-chip").filter({ hasText: "Document discussion" })).toBeVisible();
   await expect(page.getByTestId("chat-messages")).toContainText("Can you describe it better?");
   await expect(page.getByTestId("empty-chat-copy")).toHaveCount(0);
   await expectAiResult(page.getByTestId("chat-messages"), "Test assistant");
   await expect(page.getByTestId("chat-chip").filter({ hasText: "Can you describe it better?" })).toBeVisible();
+});
+
+test("includes the open document text in document-scoped chat", async ({}, testInfo) => {
+  const { document } = await createTextDocument(`Document chat context ${testInfo.project.name}`);
+  const createResponse = await fetch(`${apiBase}/api/chats`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentId: document.id, title: "Document discussion" })
+  });
+  const { chat } = (await createResponse.json()) as { chat: { id: string } };
+  const messageResponse = await fetch(`${apiBase}/api/chats/${chat.id}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: "What is this document about?" })
+  });
+  expect(messageResponse.ok).toBeTruthy();
+  const body = (await messageResponse.json()) as { chat: { messages: Array<{ role: string; content: string }> } };
+  await expectAssistantMessage(body.chat.messages, "open document");
+});
+
+test("restores a failed message draft and prevents a second send while waiting", async ({ page }, testInfo) => {
+  const title = `Reliable chat send ${testInfo.project.name}`;
+  const { document } = await createTextDocument(title);
+  let messageRequests = 0;
+  let failNext = true;
+  await page.route("**/api/chats/*/messages", async (route) => {
+    messageRequests += 1;
+    if (failNext) {
+      failNext = false;
+      await route.fulfill({ status: 503, json: { error: "Assistant temporarily unavailable" } });
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await openChat(page);
+  await page.getByTestId("chat-input").fill("Please keep this question safe");
+  await page.getByTestId("send-chat").click();
+  await expect(page.getByTestId("chat-input")).toHaveValue("Please keep this question safe");
+  await expect(page.locator(".composer-error")).toContainText("Assistant temporarily unavailable");
+  await expect(page.getByTestId("chat-pending")).toHaveCount(0);
+
+  await page.getByTestId("send-chat").click();
+  await expect(page.getByTestId("send-chat")).toBeDisabled();
+  await page.getByTestId("chat-input").fill("A second thought for later");
+  await page.getByTestId("chat-input").press("Enter");
+  await expectAiResult(page.getByTestId("chat-messages"), "Test assistant");
+  expect(messageRequests).toBe(2);
+  await expect(page.getByTestId("chat-input")).toHaveValue("A second thought for later");
+
+  const chatsResponse = await fetch(`${apiBase}/api/chats?documentId=${document.id}`);
+  const { chats } = (await chatsResponse.json()) as { chats: Array<{ id: string }> };
+  expect(chats).toHaveLength(1);
+  const chatResponse = await fetch(`${apiBase}/api/chats/${chats[0].id}`);
+  const { chat } = (await chatResponse.json()) as { chat: { messages: Array<{ role: string }> } };
+  expect(chat.messages.filter((message) => message.role === "user")).toHaveLength(1);
+});
+
+test("clears staged chat context when the open document changes", async ({ page }, testInfo) => {
+  const firstTitle = `Context source ${testInfo.project.name}`;
+  const secondTitle = `Context destination ${testInfo.project.name}`;
+  await createTextDocument(firstTitle);
+  await createTextDocument(secondTitle);
+
+  await page.goto("/");
+  await openLibrary(page);
+  await page.getByTestId("document-row").filter({ hasText: firstTitle }).click();
+  await selectTextIn(page, "page-text", "Le petit prince");
+  await page.getByTestId("menu-new-chat").click();
+  await expect(page.getByTestId("chat-context-pill")).toHaveText("Selection");
+
+  await openLibrary(page);
+  await page.getByTestId("document-row").filter({ hasText: secondTitle }).click();
+  await expect(page.getByTestId("active-title")).toContainText(secondTitle);
+  await openChat(page);
+  await expect(page.getByTestId("chat-context-pill")).toHaveCount(0);
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document…");
 });
 
 test("generates chat titles and pins renamed full-width chat rows", async ({ page }, testInfo) => {
@@ -666,12 +764,13 @@ test("generates chat titles and pins renamed full-width chat rows", async ({ pag
   await page.goto("/");
   await openLibrary(page);
   await page.getByTestId("document-row").filter({ hasText: title }).click();
-  await openAssistant(page);
+  await openChat(page);
 
   await page.getByTestId("chat-input").fill("Can you describe this passage better?");
   await page.getByTestId("send-chat").click();
   await expect(page.getByTestId("chat-chip").filter({ hasText: "Can you describe this passage better?" })).toBeVisible();
 
+  await page.getByTestId("back-to-chats").click();
   const chip = page.getByTestId("chat-chip").filter({ hasText: "Can you describe this passage better?" });
   const widthDelta = await chip.evaluate((node) => {
     const chipBox = node.getBoundingClientRect();
@@ -680,11 +779,12 @@ test("generates chat titles and pins renamed full-width chat rows", async ({ pag
   });
   expect(widthDelta).toBeLessThanOrEqual(2);
 
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toBe("Chat title");
-    await dialog.accept("Pinned explanation");
-  });
-  await chip.getByTestId("pin-chat").click();
+  await chip.getByTestId("rename-chat").click();
+  await page.getByTestId("chat-title-input").fill("Pinned explanation");
+  await page.getByTestId("chat-title-input").press("Enter");
+  await expect(page.getByTestId("chat-chip").filter({ hasText: "Pinned explanation" })).toBeVisible();
+  const renamedChip = page.getByTestId("chat-chip").filter({ hasText: "Pinned explanation" });
+  await renamedChip.getByTestId("pin-chat").click();
   const pinnedChip = page.getByTestId("chat-chip").filter({ hasText: "Pinned explanation" });
   await expect(pinnedChip).toBeVisible();
   await expect(pinnedChip.getByTestId("pin-chat")).toHaveAttribute("title", "Unpin chat");
@@ -701,7 +801,7 @@ test("returns from an active chat to the chat list without deleting it", async (
   await page.goto("/");
   await openLibrary(page);
   await page.getByTestId("document-row").filter({ hasText: title }).click();
-  await openAssistant(page);
+  await openChat(page);
 
   await page.getByTestId("chat-input").fill("Can you explain this?");
   await page.getByTestId("send-chat").click();
@@ -709,13 +809,13 @@ test("returns from an active chat to the chat list without deleting it", async (
   await expect(page.getByTestId("back-to-chats")).toBeVisible();
   const activeChipOrder = await page.getByTestId("chat-chip").filter({ hasText: "Can you explain this?" }).evaluate((chip) => {
     const back = chip.querySelector('[data-testid="back-to-chats"]')?.getBoundingClientRect();
-    const title = chip.querySelector(".chat-select span")?.getBoundingClientRect();
+    const title = chip.querySelector(".active-chat-title")?.getBoundingClientRect();
     return back && title ? back.left < title.left : false;
   });
   expect(activeChipOrder).toBeTruthy();
 
   await page.getByTestId("back-to-chats").click();
-  await expect(page.getByTestId("empty-chat-copy")).toHaveText("No messages");
+  await expect(page.getByTestId("chat-messages")).toHaveCount(0);
   const chatChip = page.getByTestId("chat-chip").filter({ hasText: "Can you explain this?" });
   await expect(chatChip).toBeVisible();
 
@@ -753,7 +853,7 @@ test("renders existing chat messages when older responses do not include selecti
   await page.goto("/");
   await openLibrary(page);
   await page.getByTestId("document-row").filter({ hasText: title }).click();
-  await openAssistant(page);
+  await openChat(page);
   await page.getByTestId("chat-chip").filter({ hasText: "Can you describe this division?" }).locator(".chat-select").click();
 
   await expect(page.getByTestId("empty-chat-copy")).toHaveCount(0);
@@ -1879,7 +1979,7 @@ test("imports images, crops a region selection, and chats about it", async ({ pa
   await page.getByTestId("menu-new-chat").click();
   await expect(page.getByTestId("selection-menu")).toHaveCount(0);
   await expect(page.getByTestId("chat-input")).toBeFocused();
-  await expect(page.getByTestId("chat-context-pill")).toHaveText("Selection");
+  await expect(page.getByTestId("chat-context-pill")).toHaveText("Image");
 
   await page.getByTestId("chat-input").fill("What should I notice in this panel?");
   await page.getByTestId("send-chat").click();
@@ -1974,6 +2074,28 @@ test("uses added visual selections as context for the next current-chat message"
   };
   expect(nextChat.selectionId).toBeNull();
   await expectAssistantMessage(nextChat.messages, "selected document-pdf");
+});
+
+test("persists image selection previews instead of discarding the crop", async ({}, testInfo) => {
+  const { document } = await createTextDocument(`Image selection persistence ${testInfo.project.name}`);
+  const imageData = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  const createResponse = await fetch(`${apiBase}/api/selections`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      documentId: document.id,
+      kind: "image",
+      imageData,
+      region: { pageIndex: 0, x: 10, y: 12, width: 40, height: 30 },
+      tags: ["image", "region"]
+    })
+  });
+  expect(createResponse.ok).toBeTruthy();
+
+  const listResponse = await fetch(`${apiBase}/api/selections?documentId=${document.id}`);
+  const { selections } = (await listResponse.json()) as { selections: Array<{ kind: string; imageData: string | null }> };
+  expect(selections).toHaveLength(1);
+  expect(selections[0]).toMatchObject({ kind: "image", imageData });
 });
 
 test("opens CBZ manga archives from the picker", async ({ page }, testInfo) => {
@@ -2410,7 +2532,7 @@ test("floating selection menu stays inside the reader viewport", async ({ page }
   expect(geometry.menuBottom).toBeLessThanOrEqual(geometry.readerBottom);
 });
 
-test("draft selections only replace notes and chat context after side-panel input", async ({ page }, testInfo) => {
+test("draft selections do not retarget notes until the note action is chosen", async ({ page }, testInfo) => {
   const title = `Draft side panel context ${testInfo.project.name}`;
   await createTextDocument(title);
   await page.goto("/");
@@ -2445,25 +2567,33 @@ test("draft selections only replace notes and chat context after side-panel inpu
 
   await selectPhrase("Le petit prince");
   await expect(page.getByTestId("note-editor")).toHaveValue("Document baseline note");
-  await expect(page.getByTestId("note-editor")).toHaveAttribute("placeholder", "Note on this selection");
-  await expect(page.getByTestId("document-note-mode")).toHaveText("Selection");
-  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this selection");
+  await expect(page.getByTestId("note-editor")).toHaveAttribute("placeholder", "Write a note about this document…");
+  await expect(page.getByTestId("document-note-mode")).toHaveCount(0);
+  await openChat(page);
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this selection…");
   await expect(page.getByTestId("chat-context-pill")).toHaveText("Selection");
   await page.mouse.click(12, 120);
   await expect(page.getByTestId("selection-menu")).toHaveCount(0);
+  await openAssistant(page);
   await expect(page.getByTestId("note-editor")).toHaveValue("Document baseline note");
-  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document");
+  await openChat(page);
+  await page.getByTestId("chat-context-pill").click();
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this document…");
   await expect(page.getByTestId("chat-context-pill")).toHaveCount(0);
 
   await selectPhrase("Le petit prince");
+  await page.getByTestId("menu-note").click();
+  await expect(page.getByTestId("note-editor")).toBeFocused();
   await page.getByTestId("note-editor").fill("Selection note written directly");
   await expect(page.getByTestId("saved-text-highlight")).toBeVisible();
   await openAssistant(page);
   await expect(page.getByTestId("note-row").filter({ hasText: "Selection note written directly" })).toBeVisible();
-  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this selection");
+  await openChat(page);
+  await expect(page.getByTestId("chat-input")).toHaveAttribute("placeholder", "Ask about this selection…");
   await expect(page.getByTestId("chat-context-pill")).toHaveText("Selection");
 
   await selectPhrase("silences autant");
+  await page.getByTestId("menu-new-chat").click();
   await page.getByTestId("chat-input").fill("Discuss this direct draft selection");
   await page.getByTestId("send-chat").click();
   await expect(page.getByTestId("chat-messages")).toContainText("Discuss this direct draft selection");
@@ -2488,6 +2618,23 @@ test("restores the last opened document on startup", async ({ page }, testInfo) 
   await expect(page.getByTestId("active-title")).toContainText(olderTitle);
 });
 
+test("uses a full-width assistant drawer on phone-sized screens", async ({ page }, testInfo) => {
+  await createTextDocument(`Phone assistant ${testInfo.project.name}`);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await openAssistant(page);
+
+  const assistantBox = await page.locator(".insight-panel").boundingBox();
+  expect(assistantBox).not.toBeNull();
+  expect(assistantBox!.width).toBeGreaterThanOrEqual(389);
+  expect(assistantBox!.x + assistantBox!.width).toBeLessThanOrEqual(391);
+  await expect(page.getByTestId("note-editor")).toBeVisible();
+
+  await openChat(page);
+  await expect(page.getByTestId("empty-chat-copy")).toContainText("Start a conversation");
+  await expect(page.getByTestId("chat-input")).toBeVisible();
+});
+
 test("resets stale assistant layout once but persists new panel choices", async ({ page }, testInfo) => {
   const title = `Layout migration ${testInfo.project.name}`;
   await createTextDocument(title);
@@ -2508,32 +2655,33 @@ test("resets stale assistant layout once but persists new panel choices", async 
   const readerWidthBeforeAssistant = (await page.getByTestId("reader-viewport").boundingBox())?.width ?? 0;
   await page.getByTestId("toggle-assistant").click();
   await expect(page.getByTestId("note-editor")).toBeVisible();
-  await expect(page.getByTestId("empty-chat-copy")).toHaveText("No messages");
-  await expect(page.locator(".note-context")).toHaveText("");
-  await expect(page.locator(".chat-section .panel-heading")).toHaveText("Chat");
-  await expect(page.locator(".chat-composer")).toHaveCSS("gap", "0px");
+  await expect(page.getByTestId("assistant-tab-notes")).toHaveAttribute("aria-selected", "true");
+  await openChat(page);
+  await expect(page.getByTestId("empty-chat-copy")).toContainText("Start a conversation");
+  await expect(page.locator(".chat-composer")).toHaveCSS("gap", "4px");
   await expect(page.getByTestId("send-chat")).toHaveCSS("min-height", "36px");
-  await expect(page.getByTestId("send-chat")).toHaveCSS("width", "38px");
+  await expect(page.getByTestId("send-chat")).toHaveCSS("width", "36px");
   const chatLayout = await page.locator(".chat-section").evaluate((section) => {
     const composer = section.querySelector(".chat-composer")!;
     const sectionRect = section.getBoundingClientRect();
     const composerRect = composer.getBoundingClientRect();
     return Math.round(sectionRect.bottom - composerRect.bottom);
   });
-  expect(chatLayout).toBeLessThanOrEqual(8);
+  expect(chatLayout).toBeLessThanOrEqual(12);
   const viewport = page.viewportSize();
   if (viewport && viewport.width <= 1180) {
     await expect(page.getByTestId("assistant-resizer")).toHaveCount(0);
     const readerBox = await page.getByTestId("reader-viewport").boundingBox();
     expect(readerBox?.width).toBeGreaterThanOrEqual(readerWidthBeforeAssistant - 8);
+    const assistantBox = await page.locator(".insight-panel").boundingBox();
+    expect(assistantBox?.width).toBeGreaterThanOrEqual(Math.min(400, viewport.width - 1));
   }
   await page.reload();
   await expect(page.getByTestId("note-editor")).toBeVisible();
-  await expect(page.getByTestId("empty-chat-copy")).toHaveText("No messages");
   await expect(page.evaluate(() => localStorage.getItem("reader.showAssistant"))).resolves.toBe("1");
 });
 
-test("auto-deletes notes when the editor is cleared", async ({ page }, testInfo) => {
+test("keeps a saved note when the editor is cleared until deletion is confirmed", async ({ page }, testInfo) => {
   const title = `Cleared note ${testInfo.project.name}`;
   await createTextDocument(title);
   await page.goto("/");
@@ -2545,9 +2693,39 @@ test("auto-deletes notes when the editor is cleared", async ({ page }, testInfo)
   await expect(page.getByTestId("note-row").filter({ hasText: "should disappear" })).toBeVisible();
 
   await page.getByTestId("note-editor").fill("");
-  await expect(page.getByTestId("note-row").filter({ hasText: "should disappear" })).toHaveCount(0);
+  await expect(page.getByTestId("note-row").filter({ hasText: "should disappear" })).toBeVisible();
   await page.reload();
-  await openLibrary(page);
-  await page.getByTestId("document-row").filter({ hasText: title }).click();
+  await openAssistant(page);
+  const noteRow = page.getByTestId("note-row").filter({ hasText: "should disappear" });
+  await expect(noteRow).toBeVisible();
+  await noteRow.getByTestId("delete-note").click();
+  await page.getByTestId("confirm-delete-note").getByRole("button", { name: "Delete" }).click();
   await expect(page.getByTestId("note-row").filter({ hasText: "should disappear" })).toHaveCount(0);
+});
+
+test("serializes note autosave while the first save is slow", async ({ page }, testInfo) => {
+  const { document } = await createTextDocument(`Slow note autosave ${testInfo.project.name}`);
+  let createRequests = 0;
+  await page.route("**/api/notes", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    createRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.continue();
+  });
+
+  await page.goto("/");
+  await openAssistant(page);
+  await page.getByTestId("note-editor").fill("The first version");
+  await expect.poll(() => createRequests).toBe(1);
+  await page.getByTestId("note-editor").fill("The final version written while saving");
+  await expect(page.getByTestId("note-row").filter({ hasText: "final version" })).toBeVisible();
+
+  const notesResponse = await fetch(`${apiBase}/api/notes?documentId=${document.id}`);
+  const { notes } = (await notesResponse.json()) as { notes: Array<{ body: string }> };
+  expect(notes).toHaveLength(1);
+  expect(notes[0].body).toBe("The final version written while saving");
+  expect(createRequests).toBe(1);
 });

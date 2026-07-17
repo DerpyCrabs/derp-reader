@@ -28,7 +28,7 @@ import {
   updateChat,
   updateNote
 } from "./db";
-import { generateAiResponse, generateChatTitle } from "./ai";
+import { generateAiResponse } from "./ai";
 import { importBlob, importPath } from "./importer";
 import { contentTypeForPath, parseArchiveSourceRef, parseDataUrl, readArchiveEntry } from "./media";
 import { resolveSelectionFileContext } from "./selectionContext";
@@ -87,6 +87,11 @@ const requireText = (value: unknown, label: string) => {
     throw new HttpError(400, `${label} is required`);
   }
   return value.trim();
+};
+
+const chatTitleFromMessage = (value: string) => {
+  const clean = value.replace(/\s+/g, " ").trim();
+  return clean.length > 44 ? `${clean.slice(0, 43).trim()}…` : clean || "Reading chat";
 };
 
 const transientSelectionFrom = (context: {
@@ -264,6 +269,14 @@ const route = async (request: Request) => {
 
   if (request.method === "POST" && path === "/api/selections") {
     const input = await readJson<CreateSelectionInput>(request);
+    const document = getDocument(input.documentId);
+    if (!document) throw new HttpError(404, "Document not found");
+    if (input.pageId && !document.pages.some((page) => page.id === input.pageId)) {
+      throw new HttpError(400, "Selection page must belong to the document");
+    }
+    if ((input.text?.length ?? 0) > 100_000 || (input.imageData?.length ?? 0) > 12_000_000) {
+      throw new HttpError(413, "Selection is too large");
+    }
     return json({ selection: createSelection(input) }, 201);
   }
 
@@ -279,6 +292,12 @@ const route = async (request: Request) => {
   if (request.method === "POST" && path === "/api/notes") {
     const input = await readJson<CreateNoteInput>(request);
     requireText(input.body, "Note body");
+    if (!getDocument(input.documentId)) throw new HttpError(404, "Document not found");
+    if (input.selectionId) {
+      const selection = getSelection(input.selectionId);
+      if (!selection) throw new HttpError(404, "Selection not found");
+      if (selection.documentId !== input.documentId) throw new HttpError(400, "Selection must belong to the note document");
+    }
     return json({ note: createNote(input) }, 201);
   }
 
@@ -305,6 +324,14 @@ const route = async (request: Request) => {
 
   if (request.method === "POST" && path === "/api/chats") {
     const input = await readJson<CreateChatInput>(request);
+    if (input.documentId && !getDocument(input.documentId)) throw new HttpError(404, "Document not found");
+    if (input.selectionId) {
+      const selection = getSelection(input.selectionId);
+      if (!selection) throw new HttpError(404, "Selection not found");
+      if (input.documentId && selection.documentId !== input.documentId) {
+        throw new HttpError(400, "Selection must belong to the chat document");
+      }
+    }
     return json({ chat: createChat(input) }, 201);
   }
 
@@ -344,14 +371,37 @@ const route = async (request: Request) => {
     if (!chat) throw new HttpError(404, "Chat not found");
 
     const messageText = requireText(input.content, "Message");
-    addChatMessage(chat.id, "user", messageText, input.selectionContexts ?? []);
-    const transientSelections = (input.selectionContexts ?? []).map(transientSelectionFrom);
+    const selectionContexts = input.selectionContexts ?? [];
+    const chatDocument = chat.documentId ? getDocument(chat.documentId) : null;
+    if (chat.documentId && selectionContexts.some((context) => context.documentId !== chat.documentId)) {
+      throw new HttpError(400, "Selection context must belong to the open document");
+    }
+    if (selectionContexts.some((context) => context.pageId && !chatDocument?.pages.some((page) => page.id === context.pageId))) {
+      throw new HttpError(400, "Selection page must belong to the open document");
+    }
+    if (selectionContexts.some((context) => (context.text?.length ?? 0) > 100_000 || (context.imageData?.length ?? 0) > 12_000_000)) {
+      throw new HttpError(413, "Selection context is too large");
+    }
+    const transientSelections = selectionContexts.map(transientSelectionFrom);
     const persistedSelection = input.selectionId ? getSelection(input.selectionId) : chat.selectionId ? getSelection(chat.selectionId) : null;
+    if (input.selectionId && !persistedSelection) throw new HttpError(404, "Selection not found");
+    if (persistedSelection && chat.documentId && persistedSelection.documentId !== chat.documentId) {
+      throw new HttpError(400, "Selection must belong to the chat document");
+    }
+    addChatMessage(chat.id, "user", messageText, selectionContexts);
     const selection = transientSelections[0] ?? persistedSelection;
     const fileContext = await resolveSelectionFileContext(transientSelections.find((item) => item.kind === "image") ?? selection);
+    const documentContext =
+      transientSelections.length === 0 && !persistedSelection && chat.documentId
+        ? (chatDocument?.pages ?? [])
+            .map((page) => page.text.trim() ? `[Page ${page.pageIndex + 1}]\n${page.text.trim()}` : "")
+            .filter(Boolean)
+            .join("\n\n")
+            .slice(0, 60_000)
+        : "";
     const selectedText = transientSelections.length
       ? transientSelections.map((item, index) => `Selection ${index + 1}:\n${item.text || JSON.stringify(item.region)}`).join("\n\n")
-      : selection?.text ?? "";
+      : selection?.text || documentContext;
     const nextChat = getChat(chat.id);
     const ai = await generateAiResponse({
       task: "chat",
@@ -363,8 +413,7 @@ const route = async (request: Request) => {
     const assistant = addChatMessage(chat.id, "assistant", ai.content);
     const isGenericTitle = /^(Selection discussion|Document discussion|Reading chat)$/.test(chat.title);
     if (isGenericTitle && (nextChat?.messages.length ?? 0) <= 1) {
-      const title = await generateChatTitle(`${messageText}\n\n${selectedText}`.trim());
-      updateChat(chat.id, { title });
+      updateChat(chat.id, { title: chatTitleFromMessage(messageText) });
     }
     return json({ message: assistant, chat: getChat(chat.id), ai });
   }

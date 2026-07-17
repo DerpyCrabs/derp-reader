@@ -411,7 +411,7 @@ export const createSelection = (input: CreateSelectionInput): SelectionRecord =>
     input.pageId ?? null,
     input.kind,
     input.text ?? "",
-    null,
+    input.imageData ?? null,
     input.region ? toJson(input.region) : null,
     input.language ?? null,
     toJson(input.tags ?? []),

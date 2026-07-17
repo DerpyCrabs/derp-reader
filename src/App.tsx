@@ -6,6 +6,7 @@ import { AssistantPanel } from "./components/AssistantPanel";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { FilePickers } from "./components/FilePickers";
 import { LibraryPanel } from "./components/LibraryPanel";
+import type { NoteSaveState } from "./components/NotesPane";
 import type { PdfDocumentProxy, RegionPayload } from "./components/ReaderPage";
 import { ReaderTopBar } from "./components/ReaderTopBar";
 import { ReaderViewport } from "./components/ReaderViewport";
@@ -20,6 +21,7 @@ import { createReaderStore, type ChatContextDraft, type DraftSelection } from ".
 import { createUiStore } from "./stores/uiStore";
 import type {
   ChatMessage,
+  ChatRecord,
   ChatSelectionContext,
   DocumentPage,
   ReadingPosition,
@@ -30,6 +32,9 @@ import type {
 (pdfjsLib as any).GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const dataUrlToBytes = async (dataUrl: string) => new Uint8Array(await (await fetch(dataUrl)).arrayBuffer());
+
+const sortChats = <T extends ChatRecord>(items: T[]) =>
+  [...items].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt);
 
 const contextAsHighlight = (documentId: string, context: DraftSelection | ChatContextDraft, id = "draft"): SelectionRecord => ({
   id,
@@ -52,13 +57,23 @@ export default function App() {
   let anchorFrame = 0;
   let anchoringScroll = false;
   let draftSavePromise: Promise<SelectionRecord | null> | null = null;
+  let noteSaveChain: Promise<void> = Promise.resolve();
+  let noteSaveRevision = 0;
+  const noteIdByContext = new Map<string, string>();
+  let sideDataRequestId = 0;
+  let openDocumentRequestId = 0;
+  let chatSendRequestId = 0;
   let latestReadingPosition: {
     documentId: string;
     payload: Pick<ReadingPosition, "pageIndex" | "zoom" | "viewMode" | "scrollY">;
   } | null = null;
 
   const [noteDraft, setNoteDraft] = createSignal("");
+  const [noteSaveState, setNoteSaveState] = createSignal<NoteSaveState>("idle");
   const [chatDraft, setChatDraft] = createSignal("");
+  const [chatSending, setChatSending] = createSignal(false);
+  const [chatSendError, setChatSendError] = createSignal("");
+  const [chatContextEnabled, setChatContextEnabled] = createSignal(true);
   const [searchQuery, setSearchQuery] = createSignal("");
   const { layout, setLayout, assistantStacked } = createLayoutStore();
   const [reader, setReader] = createReaderStore();
@@ -66,7 +81,11 @@ export default function App() {
 
   const pageCount = createMemo(() => reader.activeDoc?.pages.length ?? 0);
   const activeSelectionText = createMemo(() => reader.draftSelection?.text || reader.currentSelection?.text || "");
-  const panelSelectionContext = createMemo<SelectionRecord | DraftSelection | null>(() => reader.draftSelection ?? reader.currentSelection);
+  const noteSelectionContext = createMemo<SelectionRecord | null>(() => reader.currentSelection);
+  const availableChatSelectionContext = createMemo<SelectionRecord | DraftSelection | null>(() => reader.draftSelection ?? reader.currentSelection);
+  const chatSelectionContext = createMemo<SelectionRecord | DraftSelection | null>(() =>
+    chatContextEnabled() ? availableChatSelectionContext() : null
+  );
   const activeFloatingMenu = createMemo(() => {
     const menu = ui.floatingMenu;
     if (!menu) return null;
@@ -95,7 +114,7 @@ export default function App() {
     if (doc && draft) {
       if (draft.kind === "text" && !draft.text.trim()) return null;
       return {
-        id: crypto.randomUUID(),
+        id: `draft:${crypto.randomUUID()}`,
         documentId: doc.id,
         ...draft
       };
@@ -105,7 +124,7 @@ export default function App() {
     if (selection) {
       if (selection.kind === "text" && !selection.text.trim()) return null;
       return {
-        id: crypto.randomUUID(),
+        id: selection.id,
         documentId: selection.documentId,
         pageId: selection.pageId,
         kind: selection.kind,
@@ -120,10 +139,21 @@ export default function App() {
   const addCurrentContextToChatInput = () => {
     const context = currentChatContextDraft();
     if (!context) return;
-    setReader("chatContexts", (contexts) => [...contexts, context]);
+    setChatContextEnabled(true);
+    setReader("chatContexts", (contexts) => {
+      const duplicate = contexts.some((item) =>
+        item.documentId === context.documentId &&
+        item.pageId === context.pageId &&
+        item.kind === context.kind &&
+        item.text === context.text &&
+        JSON.stringify(item.region) === JSON.stringify(context.region)
+      );
+      return duplicate ? contexts : [...contexts, context];
+    });
   };
   const effectiveChatContexts = () => {
     if (reader.chatContexts.length > 0) return reader.chatContexts;
+    if (!chatContextEnabled()) return [];
     const context = currentChatContextDraft();
     return context ? [context] : [];
   };
@@ -271,34 +301,65 @@ export default function App() {
   };
 
   const loadSideData = async (documentId: string) => {
+    const requestId = ++sideDataRequestId;
+    setReader("selections", []);
+    setReader("notes", []);
+    setReader("chats", []);
+    setReader("activeChat", null);
+    setReader("chatContexts", []);
+    setReader("currentSelection", null);
+    setReader("editingNoteId", null);
+    setNoteDraft("");
+    setNoteSaveState("idle");
+    setChatDraft("");
+    setChatSendError("");
+    setChatContextEnabled(true);
     const [{ selections: nextSelections }, { notes: nextNotes }, { chats: nextChats }] = await Promise.all([
       api.listSelections(documentId),
       api.listNotes(documentId),
       api.listChats({ documentId })
     ]);
+    if (requestId !== sideDataRequestId || reader.activeDoc?.id !== documentId) return;
     setReader("selections", nextSelections);
     setReader("notes", nextNotes);
     setReader("chats", nextChats);
-    setReader("currentSelection", null);
-    setReader("activeChat", null);
-    setReader("editingNoteId", null);
-    setNoteDraft("");
+    const documentNote = nextNotes.find((note) => note.selectionId === null) ?? null;
+    setReader("editingNoteId", documentNote?.id ?? null);
+    setNoteDraft(documentNote?.body ?? "");
+    setNoteSaveState(documentNote ? "saved" : "idle");
   };
 
   const openDocument = async (documentId: string, remember = true) => {
+    const openRequestId = ++openDocumentRequestId;
+    sideDataRequestId += 1;
+    chatSendRequestId += 1;
+    setChatSending(false);
     setUi("busy", "Opening");
     setUi("error", "");
     setReader("activeDoc", null);
     setReader("pdfDoc", null);
     setReader("draftSelection", null);
     setReader("currentSelection", null);
+    setReader("selections", []);
+    setReader("notes", []);
+    setReader("chats", []);
+    setReader("activeChat", null);
+    setReader("chatContexts", []);
+    setReader("editingNoteId", null);
+    setNoteDraft("");
+    setNoteSaveState("idle");
+    setChatDraft("");
+    setChatSendError("");
+    setChatContextEnabled(true);
     setUi("floatingMenu", null);
     try {
       const [{ document }, { position }] = await Promise.all([api.getDocument(documentId), api.getPosition(documentId)]);
+      if (openRequestId !== openDocumentRequestId) return;
       const restoredPdf =
         document.type === "pdf" && document.fileUrl
           ? await (pdfjsLib as any).getDocument({ data: await dataUrlToBytes(document.fileUrl) }).promise
           : null;
+      if (openRequestId !== openDocumentRequestId) return;
       setReader("activeDoc", document);
       setReader("pdfDoc", restoredPdf);
       setReader("draftSelection", null);
@@ -308,6 +369,7 @@ export default function App() {
       setLayout("selectionMode", document.type === "manga" ? "image" : "text");
       setReader("scrollY", position?.scrollY ?? 0);
       await loadSideData(document.id);
+      if (openRequestId !== openDocumentRequestId) return;
       if (remember) {
         await api.recordLocation({ kind: "document", name: document.title, documentId: document.id });
         setReader("locations", (await api.listLocations()).locations);
@@ -316,9 +378,11 @@ export default function App() {
         readerRef?.scrollTo({ top: position?.scrollY ?? 0 });
       });
     } catch (openError) {
-      setUi("error", openError instanceof Error ? openError.message : "Could not open document");
+      if (openRequestId === openDocumentRequestId) {
+        setUi("error", openError instanceof Error ? openError.message : "Could not open document");
+      }
     } finally {
-      setUi("busy", "");
+      if (openRequestId === openDocumentRequestId) setUi("busy", "");
     }
   };
 
@@ -361,6 +425,19 @@ export default function App() {
       if (startupDocument) await openDocument(startupDocument.id, false);
     } catch (loadError) {
       setUi("error", loadError instanceof Error ? loadError.message : "Could not load library");
+    }
+  });
+
+  let lastChatSelectionKey = "";
+  createEffect(() => {
+    const draft = reader.draftSelection;
+    const selection = reader.currentSelection;
+    const nextKey = draft
+      ? `draft:${reader.activeDoc?.id ?? ""}:${draft.pageId ?? ""}:${draft.kind}:${JSON.stringify(draft.region)}`
+      : selection?.id ?? "";
+    if (nextKey !== lastChatSelectionKey) {
+      lastChatSelectionKey = nextKey;
+      setChatContextEnabled(Boolean(nextKey));
     }
   });
 
@@ -457,45 +534,85 @@ export default function App() {
   });
 
   createEffect(() => {
-    const doc = reader.activeDoc;
-    const body = noteDraft().trim();
+    const documentId = reader.activeDoc?.id ?? null;
     const selectionId = reader.currentSelection?.id ?? null;
-    const noteId = reader.editingNoteId;
-    if (!doc || (!body && !noteId)) return;
+    const editingNoteId = reader.editingNoteId;
+    const body = noteDraft().trim();
+    const waitingForSelection = Boolean(reader.draftSelection);
+    const revision = ++noteSaveRevision;
 
-    const timer = window.setTimeout(async () => {
-      try {
-        if (noteId && !body) {
-          const existingNote = reader.notes.find((item) => item.id === noteId);
-          await api.deleteNote(noteId);
-          if (existingNote?.selectionId) {
-            await api.deleteSelection(existingNote.selectionId);
-            setReader("selections", (items) => items.filter((selection) => selection.id !== existingNote.selectionId));
-            if (reader.currentSelection?.id === existingNote.selectionId) setReader("currentSelection", null);
+    if (!documentId) {
+      setNoteSaveState("idle");
+      return;
+    }
+
+    if (waitingForSelection) {
+      setNoteSaveState(body ? "dirty" : "idle");
+      return;
+    }
+
+    const contextKey = `${documentId}:${selectionId ?? "document"}`;
+    const existingNote = untrack(() =>
+      reader.notes.find((note) => note.id === editingNoteId) ??
+      reader.notes.find((note) => (note.selectionId ?? null) === selectionId)
+    );
+    if (existingNote) noteIdByContext.set(contextKey, existingNote.id);
+
+    if (!body) {
+      setNoteSaveState(existingNote ? "empty" : "idle");
+      return;
+    }
+
+    if (existingNote?.body === body) {
+      setNoteSaveState("saved");
+      return;
+    }
+
+    setNoteSaveState("dirty");
+    const timer = window.setTimeout(() => {
+      if (revision !== noteSaveRevision) return;
+      setNoteSaveState("saving");
+
+      const save = async () => {
+        try {
+          const targetNoteId = editingNoteId ?? noteIdByContext.get(contextKey) ?? existingNote?.id ?? null;
+          const { note } = targetNoteId
+            ? await api.updateNote(targetNoteId, body)
+            : await api.createNote({ documentId, selectionId, body });
+          noteIdByContext.set(contextKey, note.id);
+
+          if (reader.activeDoc?.id === documentId) {
+            setReader("notes", (items) => [note, ...items.filter((item) => item.id !== note.id)]);
+            if ((reader.currentSelection?.id ?? null) === selectionId) setReader("editingNoteId", note.id);
           }
-          setReader("notes", (items) => items.filter((item) => item.id !== noteId));
-          setReader("editingNoteId", (current) => (current === noteId ? null : current));
-        } else if (noteId) {
-          const { note } = await api.updateNote(noteId, body);
-          setReader("notes", (items) => items.map((item) => (item.id === note.id ? note : item)));
-        } else {
-          const { note } = await api.createNote({ documentId: doc.id, selectionId, body });
-          setReader("editingNoteId", note.id);
-          setReader("notes", (items) => [note, ...items]);
+
+          if (
+            revision === noteSaveRevision &&
+            reader.activeDoc?.id === documentId &&
+            (reader.currentSelection?.id ?? null) === selectionId &&
+            noteDraft().trim() === body
+          ) {
+            setNoteSaveState("saved");
+          }
+        } catch (noteError) {
+          if (revision === noteSaveRevision) setNoteSaveState("error");
+          setUi("error", noteError instanceof Error ? noteError.message : "Could not save note");
         }
-      } catch (noteError) {
-        setUi("error", noteError instanceof Error ? noteError.message : "Could not save note");
-      }
-    }, 250);
+      };
+
+      noteSaveChain = noteSaveChain.then(save, save);
+    }, 350);
 
     onCleanup(() => window.clearTimeout(timer));
   });
 
   createEffect(() => {
+    reader.activeDoc?.id;
     const selectionId = reader.currentSelection?.id ?? null;
     const existing = untrack(() => reader.notes.find((note) => (note.selectionId ?? null) === selectionId));
     setReader("editingNoteId", existing?.id ?? null);
     setNoteDraft(existing?.body ?? "");
+    setNoteSaveState(existing ? "saved" : "idle");
   });
 
   createEffect(() => {
@@ -766,12 +883,6 @@ export default function App() {
       reader.activeDoc?.pages.findIndex((page) => page.id === selection.pageId) ??
       -1;
     if (pageIndex >= 0) goToPage(pageIndex);
-    const { chats: nextChats } = await api.listChats({ selectionId: selection.id });
-    setReader("chats", (existing) => {
-      const merged = [...nextChats, ...existing.filter((chat) => chat.selectionId !== selection.id)];
-      return merged;
-    });
-    setReader("activeChat", nextChats[0] ? (await api.getChat(nextChats[0].id)).chat : null);
   };
 
   const openSearchResult = async (result: SearchResult) => {
@@ -802,6 +913,7 @@ export default function App() {
 
   const activateChat = async (chatId: string) => {
     const { chat } = await api.getChat(chatId);
+    if (chat.documentId && reader.activeDoc?.id !== chat.documentId) return;
     const linkedSelection = chat.selectionId ? await findSelectionById(chat.selectionId) : null;
     if (linkedSelection) {
       const pageIndex =
@@ -815,13 +927,17 @@ export default function App() {
       setReader("currentSelection", null);
     }
     showAssistantDrawer();
+    setReader("chatContexts", []);
+    setChatContextEnabled(false);
+    setChatSendError("");
     setReader("activeChat", chat);
-    setReader("chats", (items) => [chat, ...items.filter((item) => item.id !== chat.id)]);
+    setReader("chats", (items) => sortChats([chat, ...items.filter((item) => item.id !== chat.id)]));
   };
 
   const useDocumentNote = () => {
     setReader("currentSelection", null);
     setReader("draftSelection", null);
+    setNoteSaveState("idle");
   };
 
   const deleteSavedSelection = async (selection: SelectionRecord) => {
@@ -843,19 +959,24 @@ export default function App() {
   };
 
   const deleteSavedChat = async (chatId: string) => {
-    await api.deleteChat(chatId);
-    setReader("chats", (items) => items.filter((item) => item.id !== chatId));
-    if (reader.activeChat?.id === chatId) setReader("activeChat", null);
+    try {
+      await api.deleteChat(chatId);
+      setReader("chats", (items) => items.filter((item) => item.id !== chatId));
+      if (reader.activeChat?.id === chatId) setReader("activeChat", null);
+      setChatSendError("");
+    } catch (chatError) {
+      setChatSendError(chatError instanceof Error ? chatError.message : "Could not delete chat");
+    }
   };
 
   const updateSavedChat = async (chatId: string, input: { title?: string; pinned?: boolean }) => {
-    const { chat } = await api.updateChat(chatId, input);
-    setReader("chats", (items) =>
-      [chat, ...items.filter((item) => item.id !== chat.id)].sort(
-        (a, b) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt
-      )
-    );
-    if (reader.activeChat?.id === chat.id) setReader("activeChat", chat);
+    try {
+      const { chat } = await api.updateChat(chatId, input);
+      setReader("chats", (items) => sortChats([chat, ...items.filter((item) => item.id !== chat.id)]));
+      if (reader.activeChat?.id === chat.id) setReader("activeChat", chat);
+    } catch (chatError) {
+      setChatSendError(chatError instanceof Error ? chatError.message : "Could not update chat");
+    }
   };
 
   const commitDraftForSidePanel = async () => {
@@ -863,47 +984,39 @@ export default function App() {
     return await saveDraftSelection({ silent: true, preserveUserSelection: true });
   };
 
-  const handleNoteDraft = (body: string) => {
-    if (!reader.draftSelection) {
-      setNoteDraft(body);
-      return;
-    }
-
-    if (!body.trim()) {
-      setNoteDraft(body);
-      return;
-    }
-
-    void (async () => {
-      await commitDraftForSidePanel();
-      setNoteDraft(body);
-    })();
-  };
+  const handleNoteDraft = (body: string) => setNoteDraft(body);
 
   const handleChatDraft = (body: string) => {
     setChatDraft(body);
+    if (chatSendError()) setChatSendError("");
   };
 
   const createNoteFromSelection = async () => {
     const doc = reader.activeDoc;
     if (!doc) return;
+    if (reader.draftSelection) {
+      const selection = await commitDraftForSidePanel();
+      if (!selection) return;
+    }
     showAssistantDrawer();
     setUi("floatingMenu", null);
     setUi("noteFocusRequest", (value) => value + 1);
   };
 
   const removeNote = async (noteId: string) => {
-    const existingNote = reader.notes.find((note) => note.id === noteId);
-    await api.deleteNote(noteId);
-    if (existingNote?.selectionId) {
-      await api.deleteSelection(existingNote.selectionId);
-      setReader("selections", (items) => items.filter((selection) => selection.id !== existingNote.selectionId));
-      if (reader.currentSelection?.id === existingNote.selectionId) setReader("currentSelection", null);
-    }
-    setReader("notes", (items) => items.filter((note) => note.id !== noteId));
-    if (reader.editingNoteId === noteId) {
-      setReader("editingNoteId", null);
-      setNoteDraft("");
+    try {
+      const existingNote = reader.notes.find((note) => note.id === noteId);
+      await api.deleteNote(noteId);
+      if (existingNote) noteIdByContext.delete(`${existingNote.documentId}:${existingNote.selectionId ?? "document"}`);
+      setReader("notes", (items) => items.filter((note) => note.id !== noteId));
+      if (reader.editingNoteId === noteId) {
+        setReader("editingNoteId", null);
+        setNoteDraft("");
+        setNoteSaveState("idle");
+      }
+    } catch (noteError) {
+      setNoteSaveState("error");
+      setUi("error", noteError instanceof Error ? noteError.message : "Could not delete note");
     }
   };
 
@@ -916,8 +1029,9 @@ export default function App() {
       selectionId: null,
       title: contexts.length > 0 ? "Selection discussion" : "Document discussion"
     });
+    if (reader.activeDoc?.id !== doc.id) throw new Error("The open document changed before the chat was ready.");
     setReader("activeChat", chat);
-    setReader("chats", (items) => [chat, ...items]);
+    setReader("chats", (items) => sortChats([chat, ...items]));
     return chat;
   };
 
@@ -930,8 +1044,19 @@ export default function App() {
   const startNewChatFromSelection = async () => {
     showAssistantDrawer();
     setReader("activeChat", null);
+    setReader("chatContexts", []);
+    setChatSendError("");
     addCurrentContextToChatInput();
     setUi("floatingMenu", null);
+    setUi("chatFocusRequest", (value) => value + 1);
+  };
+
+  const startNewChat = () => {
+    setReader("activeChat", null);
+    setReader("chatContexts", []);
+    setChatContextEnabled(Boolean(availableChatSelectionContext()));
+    setChatDraft("");
+    setChatSendError("");
     setUi("chatFocusRequest", (value) => value + 1);
   };
 
@@ -946,48 +1071,89 @@ export default function App() {
 
   const sendChat = async () => {
     const message = chatDraft().trim();
-    if (!message) return;
-    setUi("busy", "Chatting");
-    setUi("error", "");
+    if (!message || chatSending()) return;
+
+    const documentId = reader.activeDoc?.id;
+    if (!documentId) return;
+    const requestId = ++chatSendRequestId;
+    const sendStartedAt = Date.now();
+    const consumedDraftSelection = reader.draftSelection;
+    const previousActiveChat = reader.activeChat;
+    const contexts = effectiveChatContexts().map((context) => ({
+      documentId: context.documentId,
+      pageId: context.pageId,
+      kind: context.kind,
+      text: context.text,
+      imageData: context.imageData ?? null,
+      region: context.region
+    }));
+    const selectionId = chatContextEnabled() ? reader.currentSelection?.id ?? null : null;
+    let targetChat: typeof reader.activeChat = null;
+
+    setChatSending(true);
+    setChatSendError("");
     try {
-      const consumedDraftSelection = reader.draftSelection;
       const chat = await ensureChat();
-      const contexts = effectiveChatContexts().map((context) => ({
-        documentId: context.documentId,
-        pageId: context.pageId,
-        kind: context.kind,
-        text: context.text,
-        imageData: context.imageData ?? null,
-        region: context.region
-      }));
+      targetChat = chat;
+      if (reader.activeDoc?.id !== documentId || requestId !== chatSendRequestId) return;
       const optimisticUserMessage: ChatMessage = {
-        id: `pending-${Date.now()}`,
+        id: `pending-${requestId}`,
         chatId: chat.id,
         role: "user",
         content: message,
         selectionContexts: contexts,
-        createdAt: Date.now()
+        createdAt: sendStartedAt
       };
       const optimisticChat = {
         ...chat,
         messages: [...chat.messages, optimisticUserMessage]
       };
       setReader("activeChat", optimisticChat);
-      setReader("chats", (items) => [optimisticChat, ...items.filter((item) => item.id !== optimisticChat.id)]);
+      setReader("chats", (items) => sortChats([optimisticChat, ...items.filter((item) => item.id !== optimisticChat.id)]));
       setChatDraft("");
-      const { chat: nextChat } = await api.sendMessage(chat.id, message, reader.currentSelection?.id, contexts);
-      setReader("activeChat", nextChat);
+      const { chat: nextChat } = await api.sendMessage(chat.id, message, selectionId, contexts);
+      if (reader.activeDoc?.id !== documentId || requestId !== chatSendRequestId) return;
+
+      setReader("chats", (items) => sortChats([nextChat, ...items.filter((item) => item.id !== nextChat.id)]));
+      if (reader.activeChat?.id === chat.id) setReader("activeChat", nextChat);
       setReader("chatContexts", []);
-      setReader("chats", (items) => [nextChat, ...items.filter((item) => item.id !== nextChat.id)]);
-      if (consumedDraftSelection) {
+      setChatContextEnabled(false);
+      if (consumedDraftSelection && reader.activeChat?.id === chat.id) {
         setReader("draftSelection", null);
         setReader("currentSelection", null);
         setUi("floatingMenu", null);
       }
     } catch (chatError) {
-      setUi("error", chatError instanceof Error ? chatError.message : "Chat failed");
+      if (reader.activeDoc?.id !== documentId || requestId !== chatSendRequestId) return;
+      let persisted = false;
+      let responsePersisted = false;
+      if (targetChat) {
+        try {
+          const { chat: reconciledChat } = await api.getChat(targetChat.id);
+          const matchingUserIndex = reconciledChat.messages.reduce(
+            (latest, item, index) =>
+              item.role === "user" && item.content === message && item.createdAt >= sendStartedAt - 1_000 ? index : latest,
+            -1
+          );
+          persisted = matchingUserIndex >= 0;
+          responsePersisted = matchingUserIndex >= 0 && reconciledChat.messages
+            .slice(matchingUserIndex + 1)
+            .some((item) => item.role === "assistant");
+          setReader("chats", (items) => sortChats([reconciledChat, ...items.filter((item) => item.id !== reconciledChat.id)]));
+          if (reader.activeChat?.id === reconciledChat.id) setReader("activeChat", reconciledChat);
+        } catch {
+          if (previousActiveChat && reader.activeChat?.id === targetChat.id) setReader("activeChat", previousActiveChat);
+        }
+      }
+      if (!persisted) setChatDraft(message);
+      setChatSendError(responsePersisted
+        ? ""
+        : persisted
+          ? "Your message was saved, but the assistant couldn’t respond. Try again in a moment."
+          : chatError instanceof Error ? chatError.message : "Could not send the message."
+      );
     } finally {
-      setUi("busy", "");
+      if (requestId === chatSendRequestId) setChatSending(false);
     }
   };
 
@@ -1038,22 +1204,6 @@ export default function App() {
       const next = pane === "library" ? startWidth + delta : startWidth - delta;
       const bounded = Math.max(176, Math.min(520, Math.round(next)));
       setLayout(pane === "library" ? "libraryWidth" : "assistantWidth", bounded);
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  };
-
-  const startNotesResize = (event: PointerEvent) => {
-    event.preventDefault();
-    const startY = event.clientY;
-    const startHeight = layout.notesHeight;
-    const onMove = (moveEvent: PointerEvent) => {
-      const next = startHeight + (moveEvent.clientY - startY);
-      setLayout("notesHeight", Math.max(150, Math.min(620, Math.round(next))));
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -1169,16 +1319,19 @@ export default function App() {
             <div class="resize-handle right" data-testid="assistant-resizer" onPointerDown={(event) => startPaneResize("assistant", event)} />
           </Show>
           <AssistantPanel
-            notesHeight={layout.notesHeight}
             notes={reader.notes}
             selections={reader.selections}
-            currentSelection={panelSelectionContext()}
+            noteSelection={noteSelectionContext()}
+            chatSelection={chatSelectionContext()}
             editingNoteId={reader.editingNoteId}
             noteDraft={noteDraft()}
+            noteSaveState={noteSaveState()}
             chats={reader.chats}
             activeChat={reader.activeChat}
-            stagedChatContextCount={reader.chatContexts.length}
+            stagedChatContexts={reader.chatContexts.map((context) => ({ id: context.id, kind: context.kind, text: context.text }))}
             chatDraft={chatDraft()}
+            chatSending={chatSending()}
+            chatSendError={chatSendError()}
             noteFocusRequest={ui.noteFocusRequest}
             chatFocusRequest={ui.chatFocusRequest}
             onNoteDraft={handleNoteDraft}
@@ -1190,11 +1343,25 @@ export default function App() {
               setNoteDraft(note.body);
             }}
             onDeleteNote={(noteId) => void removeNote(noteId)}
-            onStartNotesResize={startNotesResize}
             onSelectChat={(chatId) => void activateChat(chatId)}
             onDeleteChat={(chatId) => void deleteSavedChat(chatId)}
             onUpdateChat={(chatId, input) => void updateSavedChat(chatId, input)}
-            onBackToChats={() => setReader("activeChat", null)}
+            onBackToChats={() => {
+              setReader("activeChat", null);
+              setReader("chatContexts", []);
+              setChatContextEnabled(false);
+              setChatSendError("");
+            }}
+            onNewChat={startNewChat}
+            onRemoveChatContext={(contextId) => {
+              setReader("chatContexts", (contexts) => {
+                const next = contexts.filter((context) => context.id !== contextId);
+                if (next.length === 0) setChatContextEnabled(false);
+                return next;
+              });
+            }}
+            onClearCurrentChatContext={() => setChatContextEnabled(false)}
+            onDismissChatError={() => setChatSendError("")}
             onChatDraft={handleChatDraft}
             onSendChat={() => void sendChat()}
           />

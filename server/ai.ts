@@ -15,7 +15,7 @@ interface GenerateArgs {
   text: string;
   sourceLanguage?: string | null;
   targetLanguage?: string | null;
-  messages?: Array<Pick<ChatMessage, "role" | "content">>;
+  messages?: Array<Pick<ChatMessage, "role" | "content" | "selectionContexts">>;
   selection?: SelectionRecord | null;
   fileContext?: AiFileContext | null;
 }
@@ -93,7 +93,11 @@ const testMock = (args: GenerateArgs): AiResponse => {
         ? `Test assistant using the selected ${args.fileContext.source}.`
         : args.selection?.kind === "image"
           ? "Test assistant using the selected image region metadata."
-          : "Test assistant using the selected passage.",
+          : args.selection
+            ? "Test assistant using the selected passage."
+            : args.text.trim()
+              ? "Test assistant using the open document."
+              : "Test assistant without reading context.",
     provider: "none"
   };
 };
@@ -116,7 +120,7 @@ const taskSystemPrompt = (task: AiTask) => {
     return `${base} Define or explain the user's exact selected text. Do not say that no selection was provided or ask for a more specific selection. Keep the answer short and useful. Prefer one compact paragraph. Do not use markdown headings, bullet lists, tables, or standalone label lines.`;
   }
 
-  return `${base} Continue the saved chat about the selected text or image region. Use prior messages and preserve context. Use normal markdown when it genuinely helps: short headings, bullets, and lists are allowed. Do not split a sentence into heading fragments or standalone label lines; headings must be real section titles, not words from the sentence. Keep the answer focused.`;
+  return `${base} Continue the saved chat about the open document or selected reading context. Use prior messages and preserve context. Use normal markdown when it genuinely helps: short headings, bullets, and lists are allowed. Do not split a sentence into heading fragments or standalone label lines; headings must be real section titles, not words from the sentence. Keep the answer focused.`;
 };
 
 const buildPrompt = (args: GenerateArgs) => {
@@ -234,10 +238,19 @@ const generateWithAiSdk = async (provider: ProviderConfig, args: GenerateArgs): 
     args.task === "chat"
       ? [
           userMessageFor(prompt, args.fileContext),
-          ...(args.messages ?? []).map((message) => ({
-            role: message.role === "assistant" ? "assistant" : "user",
-            content: message.content
-          }))
+          ...(args.messages ?? []).map((message) => {
+            const contextText = (message.selectionContexts ?? [])
+              .map((context, index) =>
+                context.kind === "image"
+                  ? `Selection ${index + 1}: image region ${JSON.stringify(context.region)}`
+                  : `Selection ${index + 1}: ${context.text ?? ""}`
+              )
+              .join("\n");
+            return {
+              role: message.role === "assistant" ? "assistant" : "user",
+              content: contextText ? `${contextText}\n\n${message.content}` : message.content
+            };
+          })
         ]
       : [userMessageFor(prompt, args.fileContext)];
 
