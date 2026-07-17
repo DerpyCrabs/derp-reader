@@ -120,12 +120,21 @@ export const menuPositionForRect = (rect: DOMRect): FloatingMenuPosition => {
   const availableWidth = Math.max(280, bounds.right - bounds.left - inset * 2);
   const estimatedMenuWidth = Math.min(760, availableWidth);
   const minMenuHeight = 54;
-  const compactMenuHeight = 116;
+  // Leave room for the action row, selection preview, and several lines of an
+  // eventual translation or definition. The compact menu alone is much
+  // shorter, but using that as the placement threshold makes the menu favor a
+  // cramped side before its asynchronous result appears.
+  const expandedMenuHeight = 240;
   const halfWidth = estimatedMenuWidth / 2;
   const x = Math.max(bounds.left + inset + halfWidth, Math.min(rect.left + rect.width / 2, bounds.right - inset - halfWidth));
   const availableAbove = Math.max(0, rect.top - gap - bounds.top - inset);
   const availableBelow = Math.max(0, bounds.bottom - rect.bottom - gap - inset);
-  const placeAbove = availableAbove >= compactMenuHeight || availableAbove >= availableBelow;
+  const placeAbove =
+    availableAbove >= expandedMenuHeight
+      ? true
+      : availableBelow >= expandedMenuHeight
+        ? false
+        : availableAbove >= availableBelow;
   const maxHeight = Math.max(minMenuHeight, placeAbove ? availableAbove : availableBelow);
   const y = placeAbove
     ? Math.max(bounds.top + inset, rect.top - gap)

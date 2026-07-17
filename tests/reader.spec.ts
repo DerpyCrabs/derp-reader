@@ -1750,6 +1750,25 @@ test("keeps the floating menu near short mid-page PDF selections", async ({ page
   expect(geometry.topPadding).toBe(geometry.bottomPadding);
 });
 
+test("reserves room for a multi-line selection answer when choosing menu placement", async ({ page }) => {
+  await page.goto("/");
+  const position = await page.evaluate(async () => {
+    const modulePath = "/src/readerGeometry.ts";
+    const { menuPositionForRect } = await import(modulePath);
+    const reader = document.querySelector<HTMLElement>("[data-testid='reader-viewport']");
+    if (!reader) throw new Error("Expected reader viewport");
+    const bounds = reader.getBoundingClientRect();
+    const gap = 12;
+    const inset = 8;
+    const availableAbove = 140;
+    const rect = new DOMRect(bounds.left + 100, bounds.top + inset + availableAbove + gap, 100, 16);
+    return menuPositionForRect(rect);
+  });
+
+  expect(position.placement).toBe("below");
+  expect(position.maxHeight).toBeGreaterThanOrEqual(240);
+});
+
 test("does not expand PDF selections into barely touched next words", async ({ page }, testInfo) => {
   const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
   const pdfPath = testInfo.outputPath(`pdf-word-snap-${suffix}.pdf`);
