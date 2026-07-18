@@ -182,6 +182,9 @@ const dataUrlFor = (fileContext: AiFileContext) =>
 
 const isLmStudioRasterImage = (mediaType: string) => /image\/(png|jpe?g|webp)/i.test(mediaType);
 
+const reasoningEffortFor = (task: AiTask) =>
+  process.env[`AI_${task.toUpperCase()}_REASONING_EFFORT`]?.trim() || null;
+
 const lmStudioResponse = async (provider: ProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
   if (!provider.baseURL) throw new Error("LM Studio request requires a base URL.");
   const prompt = buildPrompt(args);
@@ -203,6 +206,7 @@ const lmStudioResponse = async (provider: ProviderConfig, args: GenerateArgs): P
         ]
       : [{ role: "user", content }])
   ];
+  const reasoningEffort = reasoningEffortFor(args.task);
   const response = await fetch(`${provider.baseURL.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
@@ -213,8 +217,7 @@ const lmStudioResponse = async (provider: ProviderConfig, args: GenerateArgs): P
     body: JSON.stringify({
       model: provider.modelName,
       messages,
-      max_tokens: 1024,
-      ...(args.task === "translate" ? { reasoning_effort: "none", temperature: 0 } : {})
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {})
     })
   });
   const body: any = await response.json().catch(() => null);
@@ -222,10 +225,14 @@ const lmStudioResponse = async (provider: ProviderConfig, args: GenerateArgs): P
     const message = typeof body?.error === "string" ? body.error : body?.error?.message ?? response.statusText;
     throw new Error(`LM Studio chat completion failed: ${message}`);
   }
-  const message = body?.choices?.[0]?.message;
-  const text = String(message?.content || (args.task === "translate" ? "" : message?.reasoning_content) || "").trim();
-  if (args.task === "translate" && !text) {
-    throw new Error("The translation model returned no answer. Its reasoning output was intentionally hidden.");
+  const choice = body?.choices?.[0];
+  const message = choice?.message;
+  if (args.task === "translate" && choice?.finish_reason === "length") {
+    throw new Error("The translation exceeded the model's output limit. Select a shorter passage and try again.");
+  }
+  const text = String(message?.content || "").trim();
+  if (!text) {
+    throw new Error(`The ${args.task} model returned no final answer. Its reasoning output was intentionally hidden.`);
   }
   return {
     title: args.task === "translate" ? "Translation" : args.task === "define" ? "Definitions" : "AI chat",
@@ -266,10 +273,14 @@ const generateWithAiSdk = async (provider: ProviderConfig, args: GenerateArgs): 
         ]
       : [userMessageFor(prompt, args.fileContext)];
 
+  const reasoningEffort = reasoningEffortFor(args.task);
   const result = await aiModule.generateText({
     model,
     system: taskSystemPrompt(args),
-    messages
+    messages,
+    ...(reasoningEffort
+      ? { providerOptions: { openai: { reasoningEffort } } }
+      : {})
   });
 
   return {
