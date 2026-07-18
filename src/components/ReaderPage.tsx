@@ -334,7 +334,8 @@ function RegionSelector(props: {
   onRegion: (payload: RegionPayload) => void;
 }) {
   const [drag, setDrag] = createSignal<null | { startX: number; startY: number; x: number; y: number }>(null);
-  const [committedRect, setCommittedRect] = createSignal<null | { left: number; top: number; width: number; height: number }>(null);
+  const [committedRegion, setCommittedRegion] = createSignal<null | { x: number; y: number; width: number; height: number }>(null);
+  const [sourceSizeVersion, setSourceSizeVersion] = createSignal(0);
   const rect = createMemo(() => {
     const state = drag();
     if (!state) return null;
@@ -346,6 +347,30 @@ function RegionSelector(props: {
       width: Math.abs(state.x - state.startX),
       height: Math.abs(state.y - state.startY)
     };
+  });
+
+  const committedRect = createMemo(() => {
+    sourceSizeVersion();
+    const region = committedRegion();
+    if (!region) return null;
+    const source = props.source();
+    const box = props.host().getBoundingClientRect();
+    const naturalWidth = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
+    const naturalHeight = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
+    if (naturalWidth <= 0 || naturalHeight <= 0 || box.width <= 0 || box.height <= 0) return null;
+    return {
+      left: (region.x / naturalWidth) * box.width,
+      top: (region.y / naturalHeight) * box.height,
+      width: (region.width / naturalWidth) * box.width,
+      height: (region.height / naturalHeight) * box.height
+    };
+  });
+
+  onMount(() => {
+    const observer = new ResizeObserver(() => setSourceSizeVersion((version) => version + 1));
+    observer.observe(props.host());
+    observer.observe(props.source());
+    onCleanup(() => observer.disconnect());
   });
 
   const point = (event: PointerEvent) => {
@@ -361,8 +386,6 @@ function RegionSelector(props: {
     const currentRect = rect();
     setDrag(null);
     if (!currentRect || currentRect.width < 12 || currentRect.height < 12) return;
-    setCommittedRect(currentRect);
-
     const source = props.source();
     const naturalWidth = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
     const naturalHeight = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
@@ -372,6 +395,7 @@ function RegionSelector(props: {
     const sy = currentRect.top * scaleY;
     const sw = currentRect.width * scaleX;
     const sh = currentRect.height * scaleY;
+    setCommittedRegion({ x: sx, y: sy, width: sw, height: sh });
     const crop = document.createElement("canvas");
     crop.width = Math.max(1, Math.round(sw));
     crop.height = Math.max(1, Math.round(sh));
@@ -403,7 +427,7 @@ function RegionSelector(props: {
         if (!props.active) return;
         const next = point(event);
         event.currentTarget.setPointerCapture(event.pointerId);
-        setCommittedRect(null);
+        setCommittedRegion(null);
         setDrag({ startX: next.x, startY: next.y, x: next.x, y: next.y });
       }}
       onPointerMove={(event) => {

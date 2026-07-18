@@ -2027,6 +2027,26 @@ test("imports images, crops a region selection, and chats about it", async ({ pa
   await expect(page.getByTestId("image-preview")).toBeVisible();
   await page.getByTestId("image-preview").click({ position: { x: 4, y: 4 } });
   await expect(page.getByTestId("image-preview")).toHaveCount(0);
+
+  const selectionRatio = async () => {
+    const image = await page.getByTestId("image-page").boundingBox();
+    const region = await page.getByTestId("region-layer").first().locator(".region-box").boundingBox();
+    if (!image || !region) throw new Error("Expected image and selected region bounds");
+    return {
+      x: (region.x - image.x) / image.width,
+      y: (region.y - image.y) / image.height,
+      width: region.width / image.width,
+      height: region.height / image.height
+    };
+  };
+  const ratioBeforePanelResize = await selectionRatio();
+  await page.getByTestId("toggle-library").click();
+  await expect.poll(selectionRatio).toEqual({
+    x: expect.closeTo(ratioBeforePanelResize.x, 2),
+    y: expect.closeTo(ratioBeforePanelResize.y, 2),
+    width: expect.closeTo(ratioBeforePanelResize.width, 2),
+    height: expect.closeTo(ratioBeforePanelResize.height, 2)
+  });
 });
 
 test("uses the source PDF as AI context for visual PDF regions", async ({}, testInfo) => {

@@ -160,7 +160,9 @@ export function SelectionMenu(props: SelectionMenuProps) {
       <Show when={props.result}>
         {(result) => (
           <div class="selection-result selection-copyable" data-testid="ai-result">
-            <MarkdownContent content={result().content} />
+            <Show when={props.activeTask === "translate"} fallback={<MarkdownContent content={result().content} />}>
+              <div class="translation-content">{result().content}</div>
+            </Show>
           </div>
         )}
       </Show>

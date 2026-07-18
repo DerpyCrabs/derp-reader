@@ -108,12 +108,13 @@ const notConfigured = (): AiResponse => ({
   provider: "none"
 });
 
-const taskSystemPrompt = (task: AiTask) => {
+const taskSystemPrompt = (args: Pick<GenerateArgs, "task" | "targetLanguage">) => {
+  const { task } = args;
   const base =
     "You are Derp Reader's study copilot. The UI already shows the action, so never repeat headings like Translation, Definitions, Notes, or Answer.";
 
   if (task === "translate") {
-    return `${base} Translate the user's exact selected text. Return only the translated text. Do not add headings, labels, notes, commentary, bullet lists, grammar, vocabulary, markdown, or explanations. If the selection is a fragment, translate the fragment. If it is already in the target language, return it unchanged.`;
+    return `Translate the user's text into ${args.targetLanguage?.trim() || "English"}. Output only the translation.`;
   }
 
   if (task === "define") {
@@ -125,7 +126,12 @@ const taskSystemPrompt = (task: AiTask) => {
 
 const buildPrompt = (args: GenerateArgs) => {
   if (args.task === "translate") {
-    return `Source language: ${args.sourceLanguage ?? "auto"}\nTarget language: ${args.targetLanguage ?? "English"}\n\nReturn only the translated text for this exact selection. No headings. No notes. No explanations.\n\n${args.text}`;
+    if (args.fileContext) {
+      return args.selection?.region
+        ? `Translate only the text in this selected image region: ${JSON.stringify(args.selection.region)}`
+        : "Translate the text in this image.";
+    }
+    return args.text;
   }
 
   if (args.task === "define") {
@@ -176,15 +182,17 @@ const dataUrlFor = (fileContext: AiFileContext) =>
 
 const isLmStudioRasterImage = (mediaType: string) => /image\/(png|jpe?g|webp)/i.test(mediaType);
 
-const lmStudioImageResponse = async (provider: ProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
-  if (!provider.baseURL || !args.fileContext) throw new Error("LM Studio image request requires file context.");
+const lmStudioResponse = async (provider: ProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
+  if (!provider.baseURL) throw new Error("LM Studio request requires a base URL.");
   const prompt = buildPrompt(args);
-  const content = [
-    { type: "text", text: prompt },
-    { type: "image_url", image_url: { url: dataUrlFor(args.fileContext) } }
-  ];
+  const content = args.fileContext && isLmStudioRasterImage(args.fileContext.mediaType)
+    ? [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: dataUrlFor(args.fileContext) } }
+      ]
+    : prompt;
   const messages = [
-    { role: "system", content: taskSystemPrompt(args.task) },
+    { role: "system", content: taskSystemPrompt(args) },
     ...(args.task === "chat"
       ? [
           { role: "user", content },
@@ -205,7 +213,8 @@ const lmStudioImageResponse = async (provider: ProviderConfig, args: GenerateArg
     body: JSON.stringify({
       model: provider.modelName,
       messages,
-      max_tokens: 1024
+      max_tokens: 1024,
+      ...(args.task === "translate" ? { reasoning_effort: "none", temperature: 0 } : {})
     })
   });
   const body: any = await response.json().catch(() => null);
@@ -214,7 +223,10 @@ const lmStudioImageResponse = async (provider: ProviderConfig, args: GenerateArg
     throw new Error(`LM Studio chat completion failed: ${message}`);
   }
   const message = body?.choices?.[0]?.message;
-  const text = String(message?.content || message?.reasoning_content || "").trim();
+  const text = String(message?.content || (args.task === "translate" ? "" : message?.reasoning_content) || "").trim();
+  if (args.task === "translate" && !text) {
+    throw new Error("The translation model returned no answer. Its reasoning output was intentionally hidden.");
+  }
   return {
     title: args.task === "translate" ? "Translation" : args.task === "define" ? "Definitions" : "AI chat",
     content: text,
@@ -256,13 +268,13 @@ const generateWithAiSdk = async (provider: ProviderConfig, args: GenerateArgs): 
 
   const result = await aiModule.generateText({
     model,
-    system: taskSystemPrompt(args.task),
+    system: taskSystemPrompt(args),
     messages
   });
 
   return {
     title: args.task === "translate" ? "Translation" : args.task === "define" ? "Definitions" : "AI chat",
-    content: String(result.text ?? ""),
+    content: args.task === "translate" ? String(result.text ?? "").trim() : String(result.text ?? ""),
     provider: "ai-sdk"
   };
 };
@@ -272,9 +284,9 @@ export const generateAiResponse = async (args: GenerateArgs): Promise<AiResponse
   const provider = providerConfig();
   if (!provider) return notConfigured();
 
-  if (provider.kind === "lm-studio" && args.fileContext) {
-    if (isLmStudioRasterImage(args.fileContext.mediaType)) {
-      return lmStudioImageResponse(provider, args);
+  if (provider.kind === "lm-studio" && (args.task === "translate" || args.fileContext)) {
+    if (args.task === "translate" || (args.fileContext && isLmStudioRasterImage(args.fileContext.mediaType))) {
+      return lmStudioResponse(provider, args);
     }
     return generateWithAiSdk(provider, { ...args, fileContext: null });
   }
