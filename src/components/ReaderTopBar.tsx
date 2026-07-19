@@ -1,4 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup } from "solid-js";
+import Maximize2 from "lucide-solid/icons/maximize-2";
+import Minimize2 from "lucide-solid/icons/minimize-2";
 import PanelLeftClose from "lucide-solid/icons/panel-left-close";
 import PanelLeftOpen from "lucide-solid/icons/panel-left-open";
 import PanelRightClose from "lucide-solid/icons/panel-right-close";
@@ -44,6 +46,7 @@ export function ReaderTopBar(props: ReaderTopBarProps) {
   const [settingsMenuVisible, setSettingsMenuVisible] = createSignal(false);
   const [editingPage, setEditingPage] = createSignal(false);
   const [pageInput, setPageInput] = createSignal("");
+  const [isFullscreen, setIsFullscreen] = createSignal(Boolean(document.fullscreenElement));
   const commitPageEdit = () => {
     const target = Number.parseInt(pageInput(), 10);
     setEditingPage(false);
@@ -53,6 +56,15 @@ export function ReaderTopBar(props: ReaderTopBarProps) {
   const pageTotal = () => Math.max(props.pageCount, 1);
   const pageNumber = () => Math.min(props.currentPage + 1, pageTotal());
   const pageLabel = () => `Page ${pageNumber()} / ${pageTotal()}`;
+
+  const syncFullscreen = () => setIsFullscreen(Boolean(document.fullscreenElement));
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+      return;
+    }
+    void document.documentElement.requestFullscreen();
+  };
 
   createEffect(() => {
     if (!editingPage()) setPageInput(String(pageNumber()));
@@ -82,9 +94,11 @@ export function ReaderTopBar(props: ReaderTopBarProps) {
 
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   document.addEventListener("keydown", handleDocumentKeyDown);
+  document.addEventListener("fullscreenchange", syncFullscreen);
   onCleanup(() => {
     document.removeEventListener("pointerdown", handleDocumentPointerDown);
     document.removeEventListener("keydown", handleDocumentKeyDown);
+    document.removeEventListener("fullscreenchange", syncFullscreen);
   });
 
   return (
@@ -116,6 +130,23 @@ export function ReaderTopBar(props: ReaderTopBarProps) {
       <div class="topbar-center-zone">
         <Show when={props.hasDocument}>
           <div class="reader-center-controls">
+            <div class="fullscreen-control">
+              <button
+                class="icon-button"
+                data-testid="toggle-fullscreen"
+                title={isFullscreen() ? "Exit fullscreen" : "Enter fullscreen"}
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  toggleFullscreen();
+                }}
+              >
+                <Show when={isFullscreen()} fallback={<Maximize2 size={18} />}>
+                  <Minimize2 size={18} />
+                </Show>
+              </button>
+            </div>
+
             <div ref={pageControlRef} class="page-jump">
               <div
                 class="page-indicator"

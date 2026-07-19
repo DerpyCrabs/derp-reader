@@ -134,6 +134,14 @@ input {
   pointer-events: auto;
 }
 
+.reader-center-controls .fullscreen-control {
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: auto;
+}
+
 .reader-center-controls .settings-control {
   position: absolute;
   left: calc(100% + 8px);
