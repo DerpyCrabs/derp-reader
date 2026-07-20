@@ -24,7 +24,12 @@ export function ReaderPage(props: {
   onRegion: (payload: RegionPayload) => void;
 }) {
   return (
-    <article class="page-frame" data-page-id={props.page.id} data-page-index={props.pageIndex}>
+    <article
+      class="page-frame"
+      classList={{ "pdf-page-frame": props.page.kind === "pdf" }}
+      data-page-id={props.page.id}
+      data-page-index={props.pageIndex}
+    >
       <div class="page-label">
         Page {props.pageIndex + 1}
       </div>
@@ -336,6 +341,12 @@ function RegionSelector(props: {
   const [drag, setDrag] = createSignal<null | { startX: number; startY: number; x: number; y: number }>(null);
   const [committedRegion, setCommittedRegion] = createSignal<null | { x: number; y: number; width: number; height: number }>(null);
   const [sourceSizeVersion, setSourceSizeVersion] = createSignal(0);
+
+  createEffect(() => {
+    if (props.active) return;
+    setDrag(null);
+    setCommittedRegion(null);
+  });
   const rect = createMemo(() => {
     const state = drag();
     if (!state) return null;

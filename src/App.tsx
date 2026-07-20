@@ -281,7 +281,13 @@ export default function App() {
 
   const setViewMode = (mode: typeof layout.viewMode) => setLayout("viewMode", mode);
   const setThemeMode = (mode: typeof layout.themeMode) => setLayout("themeMode", mode);
-  const setSelectionMode = (mode: typeof layout.selectionMode) => setLayout("selectionMode", mode);
+  const setSelectionMode = (mode: typeof layout.selectionMode) => {
+    if (mode === layout.selectionMode) return;
+    setReader("draftSelection", null);
+    setUi("floatingMenu", null);
+    window.getSelection()?.removeAllRanges();
+    setLayout("selectionMode", mode);
+  };
   const flushReadingPosition = (keepalive = false) => {
     if (!latestReadingPosition) return;
     const { documentId, payload } = latestReadingPosition;
@@ -1390,4 +1396,3 @@ export default function App() {
     </div>
   );
 }
-

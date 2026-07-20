@@ -1212,6 +1212,44 @@ test("keeps PDF selection editable across text-layer spans without rewriting it"
   await expect(page.getByTestId("search-result").filter({ hasText: "Corrected alpha beta note" }).first()).toBeVisible();
 });
 
+test("keeps the PDF text layer aligned with the canvas at narrow viewport widths", async ({ page }, testInfo) => {
+  const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
+  const pdfPath = testInfo.outputPath(`pdf-responsive-text-layer-${suffix}.pdf`);
+  await writeFile(
+    pdfPath,
+    makePdfLines([
+      "Responsive text layer probe on the first line",
+      "The second line must stay aligned with the canvas"
+    ])
+  );
+  await importBackendPath(pdfPath);
+  await page.setViewportSize({ width: 420, height: 720 });
+  await page.goto("/");
+
+  await expect(page.getByTestId("pdf-text-layer")).toContainText("Responsive text layer probe");
+  const geometry = await page.evaluate(() => {
+    const canvas = document.querySelector<HTMLElement>("[data-testid='pdf-canvas']");
+    const layer = document.querySelector<HTMLElement>("[data-testid='pdf-text-layer']");
+    const span = layer?.querySelector<HTMLElement>("span");
+    if (!canvas || !layer || !span) throw new Error("Expected a rendered PDF canvas and text layer");
+    const canvasRect = canvas.getBoundingClientRect();
+    const layerRect = layer.getBoundingClientRect();
+    const spanRect = span.getBoundingClientRect();
+    return {
+      canvas: { width: canvasRect.width, height: canvasRect.height },
+      layer: { width: layerRect.width, height: layerRect.height },
+      firstTextLeft: spanRect.left - layerRect.left,
+      viewportWidth: window.innerWidth
+    };
+  });
+
+  expect(geometry.viewportWidth).toBe(420);
+  expect(geometry.canvas.width).toBeGreaterThan(geometry.viewportWidth);
+  expect(Math.abs(geometry.layer.width - geometry.canvas.width)).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.layer.height - geometry.canvas.height)).toBeLessThanOrEqual(1);
+  expect(geometry.firstTextLeft).toBeCloseTo(72, 0);
+});
+
 test("keeps the selected PDF page mounted while the selection menu is open", async ({ page }, testInfo) => {
   const suffix = testInfo.project.name.replace(/[^a-z0-9]+/gi, "-");
   const pdfPath = testInfo.outputPath(`pdf-selection-scroll-${suffix}.pdf`);
@@ -1981,6 +2019,15 @@ test("PDF image selection mode removes the text layer and selects visual regions
   await expect(page.getByTestId("selection-menu")).toBeVisible();
   await expect(page.getByTestId("selection-preview-text")).toHaveCount(0);
   await expect(page.evaluate(() => window.getSelection()?.toString() ?? "")).resolves.toBe("");
+
+  await openSettings(page);
+  await page.getByTestId("selection-mode-text").click();
+  await expect(page.getByTestId("selection-menu")).toHaveCount(0);
+  await expect(page.getByTestId("region-layer").locator(".region-box")).toHaveCount(0);
+  await expect(page.getByTestId("pdf-text-layer")).toContainText("PDF text should not be selectable");
+
+  await selectTextIn(page, "pdf-text-layer", "PDF text");
+  await expect(page.getByTestId("selection-preview-text")).toContainText("PDF text");
 });
 
 test("imports images, crops a region selection, and chats about it", async ({ page }) => {
