@@ -1,4 +1,5 @@
 import type { AiResponse, ChatMessage, SelectionRecord } from "../shared/types";
+import { generateChatGptText, type ChatGptInputMessage } from "./chatgpt";
 
 type AiTask = "translate" | "define" | "chat";
 
@@ -20,30 +21,55 @@ interface GenerateArgs {
   fileContext?: AiFileContext | null;
 }
 
-type ProviderConfig = {
-  kind: "lm-studio" | "openrouter" | "openai";
+type ChatGptProviderConfig = {
+  kind: "chatgpt";
+  modelName: string;
+  serviceTier: "default" | "priority";
+};
+
+type ApiProviderConfig = {
+  kind: "lm-studio" | "openrouter";
   apiKey: string;
   modelName: string;
   baseURL?: string;
   headers?: Record<string, string>;
 };
 
+type ProviderConfig = ChatGptProviderConfig | ApiProviderConfig;
+
 const providerConfig = () => {
-  const lmStudioBaseURL = process.env.LM_STUDIO_BASE_URL?.trim();
-  if (lmStudioBaseURL) {
+  const selected = process.env.AI_PROVIDER?.trim().toLowerCase();
+  if (!selected) return null;
+
+  if (selected === "chatgpt") {
+    const configuredTier = process.env.CHATGPT_SERVICE_TIER?.trim().toLowerCase() || "default";
+    if (configuredTier !== "default" && configuredTier !== "fast" && configuredTier !== "priority") {
+      throw new Error("CHATGPT_SERVICE_TIER must be default or fast (priority is also accepted).");
+    }
+    return {
+      kind: "chatgpt",
+      modelName: process.env.CHATGPT_MODEL?.trim() || "gpt-5.6-luna",
+      serviceTier: configuredTier === "fast" || configuredTier === "priority" ? "priority" : "default"
+    } satisfies ProviderConfig;
+  }
+
+  if (selected === "lm-studio") {
+    const baseURL = process.env.LM_STUDIO_BASE_URL?.trim();
+    if (!baseURL) throw new Error("AI_PROVIDER=lm-studio requires LM_STUDIO_BASE_URL.");
     return {
       kind: "lm-studio",
       apiKey: process.env.LM_STUDIO_API_KEY?.trim() || "lm-studio",
       modelName: process.env.LM_STUDIO_MODEL?.trim() || "google/gemma-4-26b-a4b-qat",
-      baseURL: lmStudioBaseURL
+      baseURL
     } satisfies ProviderConfig;
   }
 
-  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
-  if (openRouterKey) {
+  if (selected === "openrouter") {
+    const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+    if (!apiKey) throw new Error("AI_PROVIDER=openrouter requires OPENROUTER_API_KEY.");
     return {
       kind: "openrouter",
-      apiKey: openRouterKey,
+      apiKey,
       modelName: process.env.OPENROUTER_MODEL?.trim() || "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
       baseURL: "https://openrouter.ai/api/v1",
       headers: {
@@ -53,16 +79,7 @@ const providerConfig = () => {
     } satisfies ProviderConfig;
   }
 
-  const openAiKey = process.env.OPENAI_API_KEY?.trim();
-  if (openAiKey) {
-    return {
-      kind: "openai",
-      apiKey: openAiKey,
-      modelName: process.env.AI_MODEL?.trim() || "gpt-4.1-mini"
-    } satisfies ProviderConfig;
-  }
-
-  return null;
+  throw new Error(`Unsupported AI_PROVIDER=${selected}. Use chatgpt, lm-studio, or openrouter.`);
 };
 
 const testMock = (args: GenerateArgs): AiResponse => {
@@ -104,7 +121,7 @@ const testMock = (args: GenerateArgs): AiResponse => {
 
 const notConfigured = (): AiResponse => ({
   title: "AI provider not configured",
-  content: "No AI provider is configured. Set LM_STUDIO_BASE_URL, OPENROUTER_API_KEY, or OPENAI_API_KEY on the Bun backend to enable translation, definitions, and chat.",
+  content: "No AI provider is configured. Set AI_PROVIDER to chatgpt, lm-studio, or openrouter on the Bun backend.",
   provider: "none"
 });
 
@@ -185,7 +202,7 @@ const isLmStudioRasterImage = (mediaType: string) => /image\/(png|jpe?g|webp)/i.
 const reasoningEffortFor = (task: AiTask) =>
   process.env[`AI_${task.toUpperCase()}_REASONING_EFFORT`]?.trim() || null;
 
-const lmStudioResponse = async (provider: ProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
+const lmStudioResponse = async (provider: ApiProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
   if (!provider.baseURL) throw new Error("LM Studio request requires a base URL.");
   const prompt = buildPrompt(args);
   const content = args.fileContext && isLmStudioRasterImage(args.fileContext.mediaType)
@@ -241,7 +258,55 @@ const lmStudioResponse = async (provider: ProviderConfig, args: GenerateArgs): P
   };
 };
 
-const generateWithAiSdk = async (provider: ProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
+const historyMessages = (args: GenerateArgs) =>
+  (args.messages ?? []).map((message) => {
+    const contextText = (message.selectionContexts ?? [])
+      .map((context, index) =>
+        context.kind === "image"
+          ? `Selection ${index + 1}: image region ${JSON.stringify(context.region)}`
+          : `Selection ${index + 1}: ${context.text ?? ""}`
+      )
+      .join("\n");
+    return {
+      role: message.role === "assistant" ? "assistant" as const : "user" as const,
+      content: contextText ? `${contextText}\n\n${message.content}` : message.content
+    };
+  });
+
+const chatGptMessageFor = (text: string, fileContext?: AiFileContext | null): ChatGptInputMessage => {
+  if (!fileContext) return { role: "user", content: text };
+  const dataUrl = dataUrlFor(fileContext);
+  return {
+    role: "user",
+    content: [
+      { type: "input_text", text },
+      ...(fileContext.mediaType.startsWith("image/")
+        ? [{ type: "input_image" as const, image_url: dataUrl }]
+        : [{ type: "input_file" as const, filename: fileContext.filename, file_data: dataUrl }])
+    ]
+  };
+};
+
+const chatGptResponse = async (provider: ChatGptProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
+  const prompt = buildPrompt(args);
+  const input: ChatGptInputMessage[] = args.task === "chat"
+    ? [chatGptMessageFor(prompt, args.fileContext), ...historyMessages(args)]
+    : [chatGptMessageFor(prompt, args.fileContext)];
+  const text = await generateChatGptText({
+    model: provider.modelName,
+    instructions: taskSystemPrompt(args),
+    input,
+    reasoningEffort: reasoningEffortFor(args.task),
+    serviceTier: provider.serviceTier
+  });
+  return {
+    title: args.task === "translate" ? "Translation" : args.task === "define" ? "Definitions" : "AI chat",
+    content: text,
+    provider: "chatgpt"
+  };
+};
+
+const generateWithAiSdk = async (provider: ApiProviderConfig, args: GenerateArgs): Promise<AiResponse> => {
   const aiModule: any = await import("ai");
   const openAiModule: any = await import("@ai-sdk/openai");
   const createOpenAI = openAiModule.createOpenAI ?? openAiModule.default;
@@ -257,19 +322,7 @@ const generateWithAiSdk = async (provider: ProviderConfig, args: GenerateArgs): 
     args.task === "chat"
       ? [
           userMessageFor(prompt, args.fileContext),
-          ...(args.messages ?? []).map((message) => {
-            const contextText = (message.selectionContexts ?? [])
-              .map((context, index) =>
-                context.kind === "image"
-                  ? `Selection ${index + 1}: image region ${JSON.stringify(context.region)}`
-                  : `Selection ${index + 1}: ${context.text ?? ""}`
-              )
-              .join("\n");
-            return {
-              role: message.role === "assistant" ? "assistant" : "user",
-              content: contextText ? `${contextText}\n\n${message.content}` : message.content
-            };
-          })
+          ...historyMessages(args)
         ]
       : [userMessageFor(prompt, args.fileContext)];
 
@@ -294,6 +347,8 @@ export const generateAiResponse = async (args: GenerateArgs): Promise<AiResponse
   if (process.env.AI_TEST_MOCK === "1") return testMock(args);
   const provider = providerConfig();
   if (!provider) return notConfigured();
+
+  if (provider.kind === "chatgpt") return chatGptResponse(provider, args);
 
   if (provider.kind === "lm-studio" && (args.task === "translate" || args.fileContext)) {
     if (args.task === "translate" || (args.fileContext && isLmStudioRasterImage(args.fileContext.mediaType))) {
@@ -322,11 +377,17 @@ Return only the title. No quotes. No punctuation unless needed. Max 5 words.
 ${text}`;
 
   try {
-    const response = await generateWithAiSdk(provider, {
+    const response = provider.kind === "chatgpt"
+      ? await chatGptResponse(provider, {
+          task: "chat",
+          text: prompt,
+          messages: []
+        })
+      : await generateWithAiSdk(provider, {
       task: "chat",
       text: prompt,
       messages: []
-    });
+        });
     return titleFallback(response.content);
   } catch {
     return titleFallback(text);

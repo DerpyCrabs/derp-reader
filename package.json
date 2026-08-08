@@ -11,6 +11,7 @@
     "lint": "oxlint --quiet --tsconfig tsconfig.json .",
     "check": "bun run typecheck && bun run lint",
     "build": "bun run typecheck && vite build",
+    "test:unit": "bun test server/*.test.ts",
     "test": "AI_TEST_MOCK=1 playwright test",
     "test:fast": "AI_TEST_MOCK=1 playwright test --project=chromium",
     "test:tablet": "AI_TEST_MOCK=1 playwright test --project=android-tablet",

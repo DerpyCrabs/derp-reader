@@ -350,10 +350,12 @@ const importBackendPath = async (path: string) => {
 test("product AI mode reports missing provider instead of returning mocks", async () => {
   test.skip(realAi, "Real-AI runs intentionally configure a provider.");
   const originalMock = process.env.AI_TEST_MOCK;
+  const originalProvider = process.env.AI_PROVIDER;
   const originalKey = process.env.OPENAI_API_KEY;
   const originalLmStudioBase = process.env.LM_STUDIO_BASE_URL;
   const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
   delete process.env.AI_TEST_MOCK;
+  delete process.env.AI_PROVIDER;
   delete process.env.OPENAI_API_KEY;
   delete process.env.LM_STUDIO_BASE_URL;
   delete process.env.OPENROUTER_API_KEY;
@@ -364,12 +366,14 @@ test("product AI mode reports missing provider instead of returning mocks", asyn
       text: "Bonjour"
     });
     expect(result.title).toBe("AI provider not configured");
-    expect(result.content).toContain("Set LM_STUDIO_BASE_URL");
+    expect(result.content).toContain("Set AI_PROVIDER");
     expect(result.content).not.toContain("Test translation");
     expect(result.provider).toBe("none");
   } finally {
     if (originalMock === undefined) delete process.env.AI_TEST_MOCK;
     else process.env.AI_TEST_MOCK = originalMock;
+    if (originalProvider === undefined) delete process.env.AI_PROVIDER;
+    else process.env.AI_PROVIDER = originalProvider;
     if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = originalKey;
     if (originalLmStudioBase === undefined) delete process.env.LM_STUDIO_BASE_URL;

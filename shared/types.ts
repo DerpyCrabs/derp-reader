@@ -109,7 +109,7 @@ export interface ReadingPosition {
 export interface AiResponse {
   title: string;
   content: string;
-  provider: "none" | "ai-sdk" | "lm-studio";
+  provider: "none" | "chatgpt" | "ai-sdk" | "lm-studio";
 }
 
 export interface SearchResult {
